@@ -2782,8 +2782,26 @@ export class Panel {
    */
   private importSaves(): void {
     void (async () => {
-      const files = await readImportFolder();
-      if (files.length === 0) return;
+      // EVERY OUTCOME SAYS SOMETHING. Upstream returned silently when the pick
+      // produced no usable files, and on iOS that was indistinguishable from
+      // the button being broken.
+      let picked: readonly string[];
+      let files: readonly { readonly filename: string; readonly text: string }[];
+      try {
+        ({ files, picked } = await readImportFolder());
+      } catch (err: unknown) {
+        this.toast.show(`Could not read that file: ${String(err)}`, 'error');
+        console.warn('Import read failed:', err);
+        return;
+      }
+      if (picked.length === 0) return; // cancelled
+      if (files.length === 0) {
+        this.toast.show(
+          `No saves found in ${picked.join(', ')}. Pick the .zip from Export Saves, or .json save files.`,
+          'error',
+        );
+        return;
+      }
 
       const existing = await this.bus.savedNames();
       const plan = planImport(files, existing);

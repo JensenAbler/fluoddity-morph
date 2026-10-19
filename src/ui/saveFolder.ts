@@ -118,9 +118,11 @@ export async function writeFolder(
  * open a picker, and an unattached element cannot be caught by `setHidden`
  * or by a pane rebuild.
  */
-export async function readImportFolder(): Promise<
-  readonly { readonly filename: string; readonly text: string }[]
-> {
+export async function readImportFolder(): Promise<{
+  readonly files: readonly { readonly filename: string; readonly text: string }[];
+  /** Every file the user picked, by name -- so an empty result can say why. */
+  readonly picked: readonly string[];
+}> {
   const input = document.createElement('input');
   input.type = 'file';
   // `webkitdirectory` is not in the TS DOM lib under that name on all versions,
@@ -131,36 +133,50 @@ export async function readImportFolder(): Promise<
   // .json files) directly, closing the export -> import round trip there.
   const touch =
     typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
-  if (!touch) input.setAttribute('webkitdirectory', '');
-  input.setAttribute('multiple', '');
-  input.accept = 'application/json,.json,application/zip,.zip';
-
-  const files = await new Promise<FileList | null>((resolve) => {
-    // `cancel` fires on dismissal in current browsers. Where it does not, the
-    // promise simply never settles and the click is a no-op -- the failure mode
-    // is "nothing happened", not a wrong import.
-    input.addEventListener('cancel', () => {
-      resolve(null);
-    });
-    input.addEventListener('change', () => {
-      resolve(input.files);
-    });
-    input.click();
-  });
-
-  if (files === null || files.length === 0) return [];
-
-  const out: { filename: string; text: string }[] = [];
-  for (const file of Array.from(files)) {
-    const lower = file.name.toLowerCase();
-    if (lower.endsWith('.zip')) {
-      out.push(...(await jsonFromZip(new Uint8Array(await file.arrayBuffer()))));
-      continue;
-    }
-    if (!lower.endsWith('.json')) continue;
-    out.push({ filename: file.name, text: await file.text() });
+  if (!touch) {
+    input.setAttribute('webkitdirectory', '');
+    input.accept = 'application/json,.json,application/zip,.zip';
   }
-  return out;
+  // NO `accept` ON TOUCH: iOS maps it to file types and greys out anything it
+  // cannot classify, which can make a perfectly good .json unpickable. The
+  // names are filtered below instead, and an empty result is reported.
+  input.setAttribute('multiple', '');
+  // ATTACHED WHILE OPEN, unlike upstream. iOS Safari does not reliably fire
+  // `change` on a detached file input, which made a pick do nothing at all.
+  input.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;';
+  document.body.append(input);
+
+  try {
+    const files = await new Promise<FileList | null>((resolve) => {
+      // `cancel` fires on dismissal in current browsers. Where it does not, the
+      // promise simply never settles and the click is a no-op -- the failure
+      // mode is "nothing happened", not a wrong import.
+      input.addEventListener('cancel', () => {
+        resolve(null);
+      });
+      input.addEventListener('change', () => {
+        resolve(input.files);
+      });
+      input.click();
+    });
+
+    if (files === null || files.length === 0) return { files: [], picked: [] };
+
+    const out: { filename: string; text: string }[] = [];
+    const picked = Array.from(files).map((f) => f.name);
+    for (const file of Array.from(files)) {
+      const lower = file.name.toLowerCase();
+      if (lower.endsWith('.zip')) {
+        out.push(...(await jsonFromZip(new Uint8Array(await file.arrayBuffer()))));
+        continue;
+      }
+      if (!lower.endsWith('.json')) continue;
+      out.push({ filename: file.name, text: await file.text() });
+    }
+    return { files: out, picked };
+  } finally {
+    input.remove();
+  }
 }
 
 /**

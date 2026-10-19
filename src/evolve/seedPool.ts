@@ -6,3 +6,11 @@
 export const SEED_LIKES: Readonly<Record<string, number>> = {
   'indigo flame society': 3,
 };
+
+/**
+ * The preset category shipped with this site holding Jensen's own saves
+ * (`configs/Jensen/`). It appears in File > Load right under your saves, and
+ * seeds the attractor pool when this browser has no saves of its own -- so the
+ * evolver works on a fresh device with nothing to import.
+ */
+export const HOME_CATEGORY = 'Jensen';

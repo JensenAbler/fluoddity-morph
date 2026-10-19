@@ -535,6 +535,51 @@
           "path": "Archive/Zippy.json"
         }
       ]
+    },
+    {
+      "name": "Jensen",
+      "entries": [
+        {
+          "name": "Blue-flame-cores",
+          "path": "Jensen/Blue-flame-cores.json"
+        },
+        {
+          "name": "Cavitation",
+          "path": "Jensen/Cavitation.json"
+        },
+        {
+          "name": "Gas-blue-flame",
+          "path": "Jensen/Gas-blue-flame.json"
+        },
+        {
+          "name": "Indigo-flame-society",
+          "path": "Jensen/Indigo-flame-society.json"
+        },
+        {
+          "name": "Introspection",
+          "path": "Jensen/Introspection.json"
+        },
+        {
+          "name": "Mossy-Flames",
+          "path": "Jensen/Mossy-Flames.json"
+        },
+        {
+          "name": "Rainbow-glider-vortex",
+          "path": "Jensen/Rainbow-glider-vortex.json"
+        },
+        {
+          "name": "Regenerative-Fireworks",
+          "path": "Jensen/Regenerative-Fireworks.json"
+        },
+        {
+          "name": "Spiral-varieties",
+          "path": "Jensen/Spiral-varieties.json"
+        },
+        {
+          "name": "Velvet-Flames",
+          "path": "Jensen/Velvet-Flames.json"
+        }
+      ]
     }
   ]
 }

@@ -159,7 +159,7 @@ import {
 import { type Checkpoint, CheckpointStore } from './clipboardCommands.ts';
 import { MorphTimeline, startOf } from '../morph/morph.ts';
 import { Evolver } from '../evolve/evolve.ts';
-import { SEED_LIKES } from '../evolve/seedPool.ts';
+import { HOME_CATEGORY, SEED_LIKES } from '../evolve/seedPool.ts';
 import { clearPool, loadPool, savePool } from '../evolve/poolStore.ts';
 import { type GpuDeriver, createGpuDeriver } from '../archive/gpuDeriver.ts';
 import deriveRuleSource from '../particleSystem/shaders/deriveRule.wgsl';
@@ -2062,6 +2062,22 @@ export class Orchestrator implements CommandBus {
         seeds.push({ name: save.name, likes, project: await this.bake(project, true) });
       } catch (err: unknown) {
         console.warn(`Skipped seed attractor ${save.name}:`, err);
+      }
+    }
+    // Nothing saved in this browser: fall back to the saves shipped with the
+    // site (`configs/Jensen/`), so a fresh device can evolve straight away.
+    if (seeds.length === 0) {
+      for (const name of this.store.catalog().categories[HOME_CATEGORY] ?? []) {
+        try {
+          const entry = this.store.entry(HOME_CATEGORY, name);
+          if (entry === null) continue;
+          const parsed = await this.store.read(entry);
+          const project = makeProject({ configs: parsed.configs, world: parsed.world, name });
+          const likes = SEED_LIKES[name.toLowerCase().replace(/[-_]+/g, ' ').trim()] ?? 1;
+          seeds.push({ name, likes, project: await this.bake(project, true) });
+        } catch (err: unknown) {
+          console.warn(`Skipped bundled attractor ${name}:`, err);
+        }
       }
     }
     this.evolver.setPool(seeds);
