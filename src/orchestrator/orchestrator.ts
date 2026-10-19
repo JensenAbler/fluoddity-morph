@@ -181,6 +181,31 @@ import {
 } from './settingsCommands.ts';
 import { type PresetCatalog, loadSavedInto, switchPreset } from './projectCommands.ts';
 
+/**
+ * Commands that replace or edit the project by hand. Any of them stops evolve
+ * and morph playback first -- see `dispatch`. Preview commands are included:
+ * on touch a tap IS the load.
+ */
+const TAKES_THE_WHEEL: ReadonlySet<Command['kind']> = new Set<Command['kind']>([
+  'loadConfig',
+  'loadPreset',
+  'nextPreset',
+  'prevPreset',
+  'previewConfig',
+  'loadSharedConfig',
+  'revertConfig',
+  'loadCheckpoint',
+  'loadLatestCheckpoint',
+  'clipboardApply',
+  'undo',
+  'redo',
+  'editSetting',
+  'randomizeSeed',
+  'randomizeBehavior',
+  'setPopulationLayout',
+  'applyCameraSetup',
+]);
+
 /** Everything `Orchestrator.create` needs. All GPU-adjacent, all injected. */
 export interface OrchestratorOptions {
   readonly device: GPUDevice;
@@ -823,6 +848,7 @@ export class Orchestrator implements CommandBus {
     // a hit too, and it changed no rule, so restarting the simulation for it
     // would throw away the state the user is still deciding about.
     if (selected !== null && isHit(selected) && this.pickCommits) {
+      this.stopAutomation();
       this.resetForBehavior();
       // ANNOUNCED HERE rather than from `describe`, because this is the branch
       // that knows the click COMMITTED. `describe` runs for the label whenever
@@ -2089,6 +2115,14 @@ export class Orchestrator implements CommandBus {
     savePool(this.evolver.attractors);
   }
 
+  /** Stop evolve and morph playback, saying so if either was running. */
+  private stopAutomation(): void {
+    const was = this.evolver.running ? 'Evolve' : this.morph.playing ? 'Morph playback' : null;
+    this.evolver.stop();
+    this.morph.stop();
+    if (was !== null) this.notify(`${was} stopped`);
+  }
+
   private setProject(project: Project): void {
     // **A CHANGED COHORT COUNT PUTS THE HIGHLIGHT OUT.** Read BEFORE the
     // assignment, since the comparison is across the change.
@@ -2418,6 +2452,12 @@ export class Orchestrator implements CommandBus {
    * type.
    */
   dispatch(command: Command): void {
+    // A DELIBERATE HAND ON THE PROJECT STOPS THE AUTOMATION. Evolve and the
+    // morph timeline write the project every frame, so without this a preset
+    // load, an undo or a slider drag lands for one frame and is then painted
+    // over -- the UI flickers to the new values while the particles never
+    // change behaviour.
+    if (TAKES_THE_WHEEL.has(command.kind)) this.stopAutomation();
     switch (command.kind) {
       case 'reset':
         // TIER 2 OF THE VISIT LOG: a discrete act that moves no project state.
