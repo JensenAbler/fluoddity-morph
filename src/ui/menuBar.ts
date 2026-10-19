@@ -50,7 +50,7 @@
 
 import type { Command, Status } from '../orchestrator/commands.ts';
 import { MOUSE_MODES } from '../orchestrator/commands.ts';
-import { ARCHIVE_CATEGORY, CORE_CATEGORY } from '../config/configStore.ts';
+import { ARCHIVE_CATEGORY, CORE_CATEGORY, CUSTOM_CATEGORY } from '../config/configStore.ts';
 import { localHotkeyLabel } from './hotkeys.ts';
 import { PreviewSession } from './previewSession.ts';
 import { Tooltip } from './tooltip.ts';
@@ -1113,7 +1113,14 @@ export class MenuBar {
     this.catalogSignature = signature;
     this.loadBody.textContent = '';
 
-    const categories = Object.entries(status.configCategories);
+    // YOUR SAVES FIRST (fluoddity-morph). The catalog lists Custom after Core,
+    // which is ~175 rows -- on a phone your own saves sat a long scroll below
+    // the fold and an import looked like it had done nothing. Only the MENU is
+    // reordered; the catalog, the LEFT/RIGHT cycle and name lookup keep
+    // upstream's order.
+    const categories = Object.entries(status.configCategories).sort(
+      ([a], [b]) => Number(b === CUSTOM_CATEGORY) - Number(a === CUSTOM_CATEGORY),
+    );
     if (categories.length === 0) {
       this.loadBody.append(disabledRow('no configs found'));
       return;
