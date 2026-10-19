@@ -140,6 +140,10 @@ export class MutationOverlay {
   private readonly gear: HTMLButtonElement;
   /** Full screen (hide all UI), beside the gear. */
   private readonly fullscreen: HTMLButtonElement;
+  /** Evolve play/stop, beside the full-screen button. */
+  private readonly evolve: HTMLButtonElement;
+  /** Last evolve state painted, so the icon only redraws on a change. */
+  private evolvePainted = '';
   /**
    * Pause/Resume, at the LEFT end of the touch bar's top row. `null` on desktop.
    *
@@ -740,6 +744,24 @@ export class MutationOverlay {
       this.fullscreen.blur();
     });
 
+    // EVOLVE, beside full screen: start or stop auto-evolve without opening
+    // the Evolve & Morph window. Gold while evolving -- this bar's meaning for
+    // gold is "the toggle is engaged".
+    this.evolve = document.createElement('button');
+    this.evolve.type = 'button';
+    this.evolve.style.cssText = GEAR_BUTTON_CSS;
+    this.evolve.dataset['setting'] = 'transport.evolve';
+    this.evolve.append(evolveIcon(false));
+    this.tooltip.attach(this.evolve, () => ({
+      title: this.lastStatus?.evolve.running === true ? 'Stop Evolving' : 'Evolve',
+      body: 'Wander between your liked states. Loading a preset or changing a setting stops it.',
+    }));
+    this.evolve.addEventListener('click', () => {
+      const running = this.lastStatus?.evolve.running === true;
+      opts.send(running ? { kind: 'evolveStop' } : { kind: 'evolveStart' });
+      this.evolve.blur();
+    });
+
     // The tool control goes INSIDE the bar, not below it. Floating on its own
     // it read as a stray tooltip over the canvas rather than as part of the UI,
     // and a status line that looks like an error message is worse than none.
@@ -832,7 +854,7 @@ export class MutationOverlay {
       // freezes what the slider is changing, the other hides everything around
       // it. Both are fixed-width and centre against the two-line stack between
       // them, which is the arrangement the gear's own comment above describes.
-      top.append(this.pause, sliderGroup, this.gear, this.fullscreen);
+      top.append(this.pause, sliderGroup, this.gear, this.evolve, this.fullscreen);
 
       const bottom = document.createElement('div');
       bottom.style.cssText = TOUCH_BAR_ROW_CSS;
@@ -856,6 +878,7 @@ export class MutationOverlay {
         this.reset,
         this.tool,
         this.gear,
+        this.evolve,
         this.fullscreen,
       );
     }
@@ -1274,6 +1297,21 @@ export class MutationOverlay {
     // read this at hover time, and a stale one would describe a state the bar
     // has already left.
     this.lastStatus = status;
+
+    // The evolve toggle: icon and colour follow the live state; disabled until
+    // the attractor pool is ready and non-empty.
+    const ev = status.evolve;
+    const paint = `${ev.running}|${ev.ready && ev.attractors.length > 0}`;
+    if (paint !== this.evolvePainted) {
+      this.evolvePainted = paint;
+      this.evolve.replaceChildren(evolveIcon(ev.running));
+      this.evolve.style.color = ev.running ? ACTIVE_GOLD : IDLE_WHITE;
+      const usable = ev.running || (ev.ready && ev.attractors.length > 0);
+      this.evolve.disabled = !usable;
+      this.evolve.style.opacity = usable ? '1' : '0.4';
+      this.evolve.setAttribute('aria-label', ev.running ? 'Stop evolving' : 'Evolve');
+      this.evolve.setAttribute('aria-pressed', String(ev.running));
+    }
 
     this.refreshPopulationGroup(status);
 
@@ -2656,6 +2694,20 @@ function fencesIcon(solid: boolean): SVGSVGElement {
  * which is what lets a hover or disabled state recolour it without this function
  * knowing either exists.
  */
+/** Evolve's icon: a play triangle, or a stop square while evolving. */
+function evolveIcon(running: boolean): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 14 14');
+  svg.setAttribute('width', '14');
+  svg.setAttribute('height', '14');
+  svg.style.display = 'block';
+  const shape = document.createElementNS(SVG_NS, 'path');
+  shape.setAttribute('d', running ? 'M3 3h8v8H3z' : 'M3.5 2.2v9.6L11.5 7z');
+  shape.setAttribute('fill', 'currentColor');
+  svg.append(shape);
+  return svg;
+}
+
 function gearIcon(): SVGSVGElement {
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('viewBox', `0 0 ${String(ICON_BOX)} ${String(ICON_BOX)}`);
