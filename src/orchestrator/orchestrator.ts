@@ -186,6 +186,25 @@ import { type PresetCatalog, loadSavedInto, switchPreset } from './projectComman
  * and morph playback first -- see `dispatch`. Preview commands are included:
  * on touch a tap IS the load.
  */
+/** How long a GPU readback may take before baking is abandoned. */
+const DERIVER_TIMEOUT_MS = 5000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timed out ${what}`)), ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e: unknown) => {
+        clearTimeout(timer);
+        reject(e instanceof Error ? e : new Error(String(e)));
+      },
+    );
+  });
+}
+
 const TAKES_THE_WHEEL: ReadonlySet<Command['kind']> = new Set<Command['kind']>([
   'loadConfig',
   'loadPreset',
@@ -1994,12 +2013,17 @@ export class Orchestrator implements CommandBus {
   // =========================================================================
 
   private deriver(): Promise<GpuDeriver | null> {
-    this.deriverPromise ??= createGpuDeriver(this.device, deriveRuleSource).catch(
-      (err: unknown) => {
-        console.warn('Rule deriver unavailable; keyframes will not be baked:', err);
-        return null;
-      },
-    );
+    // BOUNDED: a pipeline build that never settles (seen as a dead Evolve
+    // button on a phone) must not hold the attractor pool hostage. After the
+    // timeout we carry on unbaked rather than wait forever.
+    this.deriverPromise ??= withTimeout(
+      createGpuDeriver(this.device, deriveRuleSource),
+      DERIVER_TIMEOUT_MS,
+      'building the rule deriver',
+    ).catch((err: unknown) => {
+      console.warn('Rule deriver unavailable; states will not be baked:', err);
+      return null;
+    });
     return this.deriverPromise;
   }
 
@@ -2040,13 +2064,23 @@ export class Orchestrator implements CommandBus {
         deriver !== null &&
         (c.mutationScale !== 0 || generatedOnGpu(c.rule))
       ) {
-        const rule = await deriver.derive({
-          rule: c.rule,
-          cohort: 0,
-          mutationSeed: c.mutationSeed,
-          mutationScale: c.mutationScale,
-        });
-        next = { ...c, rule: [...rule], mutationScale: 0 };
+        try {
+          const rule = await withTimeout(
+            deriver.derive({
+              rule: c.rule,
+              cohort: 0,
+              mutationSeed: c.mutationSeed,
+              mutationScale: c.mutationScale,
+            }),
+            DERIVER_TIMEOUT_MS,
+            'reading back a rule',
+          );
+          next = { ...c, rule: [...rule], mutationScale: 0 };
+        } catch (err: unknown) {
+          // Give up on baking for the session rather than stall every caller.
+          console.warn('Baking failed; continuing unbaked:', err);
+          this.deriverPromise = Promise.resolve(null);
+        }
       }
       if (single) next = { ...next, cohorts: 1 };
       configs.push(next);
@@ -3064,17 +3098,27 @@ export class Orchestrator implements CommandBus {
 
       // --- auto-evolve -------------------------------------------------------
       case 'evolveStart': {
-        if (!this.evolver.ready) return;
+        if (!this.evolver.ready) {
+          this.notify('Attractors are still loading -- try again in a moment');
+          return;
+        }
+        if (this.evolver.attractors.length === 0) {
+          this.notify('No attractors yet -- ♥ something first');
+          return;
+        }
         this.morph.stop();
         // From what is on screen, baked, so the first moves start where you are.
         const from = this.project;
-        void this.bake(from, true).then((baked) => {
-          if (!this.evolver.start(baked)) return;
-          if (command.restart === true) {
-            this.clearHighlight();
-            this.system.reset();
-          }
-        });
+        void this.bake(from, true)
+          .catch(() => from)
+          .then((baked) => {
+            if (!this.evolver.start(baked)) return;
+            this.notify(`Evolving -- becoming ${this.evolver.view().focusName}`);
+            if (command.restart === true) {
+              this.clearHighlight();
+              this.system.reset();
+            }
+          });
         return;
       }
       case 'evolveStop':

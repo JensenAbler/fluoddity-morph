@@ -111,16 +111,18 @@ export interface EvolveSettings {
 }
 
 export const DEFAULT_SETTINGS: EvolveSettings = {
-  minSeconds: 6,
-  maxSeconds: 75,
+  // Quick enough to SEE on first press: the rule genes (glacial in the layered
+  // arrangement) take ~25s to reach a favorite rather than over a minute.
+  minSeconds: 3,
+  maxSeconds: 30,
   skew: 0,
   mode: 'fluid',
   fluidSeconds: 120,
   coherence: 0.85,
   ruleWander: 0.1,
   settingWander: 0.03,
-  dwellSeconds: 10,
-  exploreSeconds: 20,
+  dwellSeconds: 8,
+  exploreSeconds: 15,
 };
 
 /** The phase-field arrangement: rule glacial, sensors slow, forces medium, color fast. */
