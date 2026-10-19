@@ -116,3 +116,40 @@ test('static ranks hold still, fluid ranks wander', () => {
 test('Indigo Flame Society seeds with three likes', () => {
   assert.equal(SEED_LIKES['indigo flame society'], 3);
 });
+
+test('a visit really arrives: the live rule becomes the favorite, then dwells', () => {
+  const ev = new Evolver(seeded(21));
+  ev.setPool([
+    { name: 'a', project: project(0), likes: 1 },
+    { name: 'b', project: project(1), likes: 1 },
+  ]);
+  ev.settings.mode = 'static';
+  ev.settings.dwellSeconds = 5;
+  ev.start(project(0.5));
+  assert.equal(ev.phase, 'visit');
+  let p = ev.current()!;
+  for (let i = 0; i < 2000 && ev.phase === 'visit'; i++) p = ev.step(0.1)!;
+  assert.equal(ev.phase, 'dwell');
+  const view = ev.view();
+  assert.ok(view.nearestDistance < 1e-9, String(view.nearestDistance));
+  assert.equal(view.nearestName, view.focusName);
+  const target = view.focusName === 'a' ? 0 : 1;
+  assert.ok(p.configs[0]!.rule.every((v) => Math.abs(v - target) < 1e-9));
+  for (let i = 0; i < 60; i++) ev.step(0.1);
+  assert.equal(ev.phase, 'explore');
+});
+
+test('with explore at 0 it goes straight to a different favorite', () => {
+  const ev = new Evolver(seeded(4));
+  ev.setPool([
+    { name: 'a', project: project(0), likes: 1 },
+    { name: 'b', project: project(1), likes: 1 },
+  ]);
+  ev.settings.exploreSeconds = 0;
+  ev.settings.dwellSeconds = 1;
+  ev.start(null);
+  const first = ev.view().focusName;
+  for (let i = 0; i < 4000 && ev.view().focusName === first; i++) ev.step(0.1);
+  assert.notEqual(ev.view().focusName, first);
+  assert.equal(ev.phase, 'visit');
+});

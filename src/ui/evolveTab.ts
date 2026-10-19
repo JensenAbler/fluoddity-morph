@@ -54,10 +54,11 @@ const SPEED_SLIDERS: readonly SliderSpec[] = [
 ];
 
 const LEASH_SLIDERS: readonly SliderSpec[] = [
-  { key: 'coherence', label: 'coherence', min: 0, max: 1, step: 0.05, title: 'High: genes aim at the same favorite (whole creatures). Low: genes from different favorites recombine' },
-  { key: 'ruleWander', label: 'rule wander', min: 0, max: 0.8, step: 0.01, title: 'How far the rule may stray from your favorites, in units of their own spread' },
+  { key: 'coherence', label: 'coherence', min: 0, max: 1, step: 0.05, title: 'While exploring. High: genes stay near the favorite just visited. Low: genes from different favorites recombine' },
+  { key: 'ruleWander', label: 'rule wander', min: 0, max: 0.8, step: 0.01, title: 'While exploring: how far the rule may stray from your favorites, in units of their own spread' },
   { key: 'settingWander', label: 'setting wander', min: 0, max: 0.3, step: 0.005, title: 'How far sensor/force/color/trail settings may stray, as a fraction of slider range' },
-  { key: 'focusSeconds', label: 'focus', min: 10, max: 300, step: 5, unit: 's', title: 'Seconds between changes of the favorite most genes are aiming at' },
+  { key: 'dwellSeconds', label: 'dwell', min: 0, max: 120, step: 1, unit: 's', title: 'Seconds to rest on a favorite once the creature has fully become it' },
+  { key: 'exploreSeconds', label: 'explore', min: 0, max: 300, step: 5, unit: 's', title: 'Seconds of free wandering between visits. 0 goes straight from one favorite to the next' },
 ];
 
 function fmt(v: number, step: number, unit = ''): string {
@@ -299,11 +300,17 @@ export class EvolveTab {
 
   refresh(status: Status): void {
     const ev = status.evolve;
+    const near =
+      ev.nearestName === '' ? '' : ` · nearest: ${ev.nearestName} (${ev.nearestDistance.toFixed(2)})`;
     this.status.textContent = !ev.ready
       ? 'Preparing attractors…'
-      : ev.running
-        ? `Evolving · ${String(ev.attractors.length)} attractors`
-        : `${String(ev.attractors.length)} attractors · ♥ adds what you see`;
+      : !ev.running
+        ? `${String(ev.attractors.length)} attractors · ♥ adds what you see`
+        : ev.phase === 'visit'
+          ? `Becoming ${ev.focusName} · ${String(ev.arrived)}/${String(ev.ranks.length)} genes${near}`
+          : ev.phase === 'dwell'
+            ? `Resting on ${ev.focusName}${near}`
+            : `Exploring near ${ev.focusName}${near}`;
 
     const running = ev.running ? '1' : '0';
     if (this.startButton.dataset['running'] !== running) {
