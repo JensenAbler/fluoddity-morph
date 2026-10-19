@@ -1,0 +1,747 @@
+/**
+ * Preferences: editor state that is NOT part of a saved config.
+ * The port of `preferences/preferences.py` (131 lines).
+ *
+ * The three-way split the desktop draws (`preferences.py:1-14`) is the whole
+ * point of the file, and it holds here unchanged:
+ *
+ *   ConfigData   per-particle behaviour. SAVED. Loading someone else's config
+ *                should change these -- that IS the config.
+ *   WorldData    global simulation properties (trail decay). Saved, for the
+ *                same reason: they define how the piece looks.
+ *   Preferences  how YOUR editor is set up: brightness, physics rate, canvas
+ *                size. NOT saved with a config, because loading a config you
+ *                downloaded should not dim your screen or resize your canvas.
+ *
+ * ## Storage: localStorage, not a file
+ *
+ * The desktop writes `preferences.json` at the repo root. There is no
+ * filesystem here, and the plan (Step 7) names `localStorage` as the
+ * replacement. The two differences that follow are both deliberate:
+ *
+ *   - **Storage may be absent or throw.** Safari in private mode throws from
+ *     `localStorage.setItem`, and an embedded context may have no `localStorage`
+ *     at all. `load()` NEVER THROWS (the Python's contract) and `save()`
+ *     swallows the failure with a console warning, the way the Python swallows
+ *     `OSError`. An editor that cannot persist preferences must still run.
+ *   - **`load()` is synchronous**, matching the Python, because
+ *     `localStorage` is. Step 9's IndexedDB config storage will not be, but
+ *     preferences are small and the synchronous API is what keeps startup from
+ *     needing an await before the first frame.
+ *
+ * Unknown keys are DROPPED on load, so a downgrade survives a newer version's
+ * file -- `preferences.py:112-113` filters against the known field set for
+ * exactly that reason. Keys of the wrong TYPE are dropped too, which the Python
+ * does not do: `json.loads` there feeds a dataclass that never validates, so a
+ * hand-edited `"physics_steps": "lots"` would reach the GPU as a string. In
+ * JavaScript that lands as `NaN` in a uniform and freezes the simulation, so
+ * the port validates at the boundary. See `coerce`.
+ */
+
+/**
+ * Editor preferences. Immutable; edits produce a new object via `withValue`,
+ * which is the port of the Python's `dataclasses.replace` on a frozen class.
+ */
+export interface Preferences {
+  // --- live ---
+  /**
+   * Output brightness multiplier. Applied by the assembler, ONCE, for both
+   * camera modes -- so TRAIL and PARTICLES respond to it identically.
+   */
+  readonly brightness: number;
+  /** Physics sub-steps per rendered frame. Higher = faster simulation time. */
+  readonly physicsSteps: number;
+
+  // --- display: the frame assembly pipeline ---
+  /**
+   * Highlight compression for the asinh tone curve. Low is more linear
+   * (brighter highlights); high is more logarithmic (reveals faint detail).
+   *
+   * The desktop enforces no lower bound. `asinh_f32` in `frameAssembly.wgsl`
+   * assumes a non-negative argument, so the PACKER clamps this to >= 0 rather
+   * than the shader carrying a sign-preserving form.
+   */
+  readonly tonemapSoftness: number;
+
+  /**
+   * Temporal supersampling. TARGET samples per displayed frame -- the achieved
+   * count is the nearest one that divides `physicsSteps`, so this is a target
+   * rather than a promise. See `camera/blurSchedule.ts`.
+   *
+   * 1 IS THE OFF SWITCH -- one render per frame is what "no blur" means, so
+   * there is no separate enable flag to disagree with it.
+   */
+  readonly motionBlurSamples: number;
+
+  /**
+   * Whether the frame-rate button is on screen.
+   *
+   * **AN EDITOR PREFERENCE, NOT A DISPLAY ONE**, despite sitting beside bloom in
+   * the panel. It changes nothing about what is rendered -- no pass, no uniform,
+   * no pixel of the canvas -- so it is deliberately absent from
+   * `DisplayPreferences` below, which is the subset the camera and assembler
+   * read. Adding it there would hand the render path a value it must ignore.
+   *
+   * Grouped with Display anyway, because that is where a user looks for "things
+   * on my screen", and the counter is one. The registry entry decides that; this
+   * only stores it.
+   */
+  readonly showFpsCounter: boolean;
+
+  /**
+   * Whether the physics-rate slider is expanded beside its fast-forward button.
+   *
+   * **BOOKKEEPING, NOT A CONTROL, so it is deliberately absent from
+   * `settingsSpec.ts`** -- the same call the three `advanced*` flags and
+   * `calibrationVersion` make. There is nothing here a user would go to Preferences to
+   * drag: the round button IS the toggle, and a checkbox naming it would be a
+   * second way to say what one press already says.
+   *
+   * Persisted rather than session-only because it is a statement about how
+   * someone wants their screen laid out, not a moment-to-moment choice like the
+   * active tool -- closing it says "I do not want this over my artwork", and
+   * having to close it again on every reload would make the gesture useless.
+   *
+   * **DEFAULTS TO OPEN**, for the reason `showFpsCounter` defaults to on: a
+   * collapsed slider is a lone button that gives no hint what it expands
+   * into, and the rate is worth discovering. See `ui/physicsSlider.ts`.
+   */
+  readonly physicsSliderOpen: boolean;
+
+  /**
+   * Whether the physics-rate widget is on screen AT ALL.
+   *
+   * **A DIFFERENT QUESTION FROM `physicsSliderOpen`, and the pair is the whole
+   * point.** That one folds the track into the button and is bookkeeping the
+   * round button itself writes; this one removes button and track together, and
+   * is a control a user goes to Preferences to find. So this one HAS a registry
+   * entry where that one deliberately has none -- the two are the same
+   * distinction `showFpsCounter` and the `advanced*` flags already draw.
+   *
+   * Three states come out of the pair, which is what was asked for: expanded
+   * (both true), collapsed to a lone round button (`physicsSliderOpen` false),
+   * and gone entirely (this false). Folding is one press on the canvas;
+   * banishing it is a deliberate trip to a checkbox, which is the right cost
+   * ratio for an action whose only undo is finding that same checkbox again.
+   *
+   * **DEFAULTS TO TRUE**, for the reason `showFpsCounter` does: the rate is one
+   * of the three settings that decide the frame rate, the panels start hidden,
+   * and a widget nobody can see is not a dial anyone will discover.
+   */
+  readonly showPhysicsSlider: boolean;
+
+  readonly bloomEnabled: boolean;
+  /** Brightness cutoff for bloom extraction. Lower glows more widely. */
+  readonly bloomThreshold: number;
+  readonly bloomIntensity: number;
+  /** Spread of the blur kernel, in source-texel units. */
+  readonly bloomRadius: number;
+
+  // --- drawing (the Draw tool; the field itself arrives in Step 9) ---
+  /** Airbrush gaussian sigma, in aspect-corrected canvas uv. */
+  readonly drawSize: number;
+  /**
+   * How hard a stroke paints, at the moment it is painted.
+   *
+   * Distinct from the two FIELD STRENGTHS below, and the difference is when each
+   * applies. This one is baked into the texture: it decides what gets written,
+   * and changing it later does nothing to what is already there. The strengths
+   * are applied at READ time, every step, so they retune a field that was painted
+   * an hour ago. That is the whole reason both exist.
+   */
+  readonly drawPower: number;
+
+  /**
+   * Which way a stroke's vectors point. An INDEX into `BRUSH_MODES`.
+   *
+   * An int rather than a string for the reason `mobileMode` is one: preferences
+   * are validated by `PREFERENCE_KINDS`, which knows three primitive kinds, and
+   * an out-of-range index degrades to the default at the one place that reads it
+   * (`brushModeFor`). A persisted string from a future build would not.
+   */
+  readonly brushMode: number;
+
+  /**
+   * The direction the `fixed` brush paints, in radians. 0 is UP.
+   *
+   * -PI..PI, so the slider's two ends meet at straight down and the handle's
+   * centre is the default. Read by that one mode; stored unconditionally, since
+   * a mode switch should not lose the angle you set.
+   */
+  readonly drawAngle: number;
+
+  /**
+   * Multiplier on the painted WALLS layer, applied at read time. 0..4.
+   *
+   * 1.0 reproduces the fixed gain this feature replaced, so a field painted
+   * before these sliders existed behaves identically. 0.0 mutes a painted set of
+   * walls without erasing it, which is the case that motivated the control.
+   */
+  readonly wallsStrength: number;
+  /** Multiplier on the painted TRAILS layer, applied at read time. 0..4. */
+  readonly trailsStrength: number;
+
+  /**
+   * Opacity of the painted-field overlay. EXACTLY zero is the off switch: the
+   * assembler does not sample the field texture at all below it. Shared by both
+   * layers -- it is how strongly the overlay is drawn, not which one is drawn.
+   */
+  readonly fieldOpacity: number;
+  /**
+   * Show the WALLS overlay regardless of which tool is active.
+   *
+   * **CONSULTED IN EVERY TOOL, including the painting ones.** The Walls tool
+   * shows its own layer whether or not this is set -- painting blind is not a
+   * preference worth offering -- so what this adds is the walls staying visible
+   * everywhere else, the Trails tool included. Watching the walls you are
+   * threading a trail around is exactly the case it exists for.
+   */
+  readonly fieldAlwaysShow: boolean;
+  /** Show the TRAILS overlay regardless of which tool is active. */
+  readonly trailsAlwaysShow: boolean;
+  /**
+   * The brush reticle. Only ever drawn while a BRUSH tool is active, so this
+   * gates it within those tools rather than across all of them.
+   */
+  readonly showReticle: boolean;
+
+  // --- behaviour ------------------------------------------------------------
+  /**
+   * Restart the simulation whenever the particles receive a NEW TARGET RULE.
+   *
+   * A rule change is not like a slider: it replaces what every particle is
+   * trying to do, and the structure on screen was built by the OLD rule. Without
+   * a restart the new behaviour has to fight its way out of the previous one's
+   * settled state, so what you see is neither rule -- and the difference between
+   * "this rule is uninteresting" and "this rule has not escaped the last one
+   * yet" is invisible.
+   *
+   * Covers every path that adopts a rule: click-to-select, Reroll Mutations,
+   * Reroll All Behavior, and undo/redo of any of them. `Orchestrator`'s
+   * `resetForBehavior` is the single call site, and the undo/redo half compares
+   * the rule across the step rather than resetting on every undo -- see
+   * `ruleChanged`.
+   *
+   * A PREFERENCE AND NOT A FEATURE FLAG, unlike `RESET_ON_CONFIG_LOAD` next to
+   * it in `featureFlags.ts`: this is a genuine working preference (watching a
+   * rule evolve from where the last one left off is a legitimate thing to want),
+   * not an open question awaiting an answer. Advanced tier, because the default
+   * is right for almost everyone and the control only matters once you have
+   * noticed the behaviour it governs.
+   */
+  readonly resetOnBehaviorChange: boolean;
+
+  /**
+   * Adopt a picked particle's rule on the FIRST click, with no highlight step.
+   *
+   * The two-stage selection (click to light a cohort, click again inside it to
+   * commit) exists so a rule change is never a surprise: you see which particles
+   * you are about to retarget before you take them. That is worth an extra click
+   * when you are choosing deliberately, and a nuisance when you are sweeping
+   * through particles looking for something interesting. This is the escape
+   * hatch for the second case, and the behaviour the editor had before the
+   * highlight existed.
+   *
+   * **WHILE THIS IS ON, HIGHLIGHTING IS OFF ENTIRELY** -- not merely bypassed.
+   * A lit cohort whose confirming click no longer does anything would dim most
+   * of the screen for a stage that cannot be completed, so `Orchestrator.
+   * highlightEnabled` is false here and the highlight is cleared when the
+   * preference is turned on. See `applyPickToHighlight`.
+   */
+  readonly oneClickSelection: boolean;
+
+  /**
+   * Record every project state visited into the permanent archive (`archive/`).
+   *
+   * **A RESEARCH FEATURE, NOT A WORKING PREFERENCE**, which is why it is Advanced
+   * tier and defaults OFF. It changes nothing about the simulation, the panels or
+   * what is rendered; it writes a graph of visited states to its own IndexedDB
+   * database so the exploration can be studied offline. Somebody who never ticks
+   * it never pays for it -- `ProjectArchive` is constructed inert and costs one
+   * null check per undo entry.
+   *
+   * **NOT A `ViewPrefField`**, despite being a persisted boolean the panel
+   * renders: those govern how the editor is ARRANGED and have no registry entry.
+   * This is an ordinary row in the Preferences panel and travels by `editSetting`
+   * like every other row -- the same call `showFpsCounter` makes.
+   *
+   * Turning it on mid-session does not retroactively record anything, and the
+   * state the user happens to be in becomes an archive root only if it is
+   * genuinely unseen. See `ProjectArchive.enable`.
+   */
+  readonly strongLogging: boolean;
+
+  // --- disruptive: changing these reallocates and resets the simulation ---
+  /** Scales entity count and canvas resolution together. */
+  readonly worldSize: number;
+  /** Canvas width:height. Reshapes world space (see `coords.ts`). */
+  readonly canvasAspect: number;
+
+  // --- view mode: which controls each panel shows ---------------------------
+  /**
+   * Per-panel Basic/Advanced tier.
+   *
+   * **THREE FLAGS, NOT ONE.** There used to be a single global tier governing
+   * every section at once, which meant wanting the advanced brush controls also
+   * unfolded every advanced physics slider. Each panel now bifurcates on its
+   * own, so the Advanced checkbox at the top of a panel is about that panel and
+   * nothing else.
+   *
+   * These configure the INTERFACE, not the simulation, so they never reach a
+   * config, a preset or history -- the same reason the drawing prefs do not.
+   * They live here rather than on `Panel` only because they PERSIST: the old
+   * global tier reset each session deliberately, but a per-panel choice is a
+   * lasting statement about how you work rather than a temporary peek, and
+   * re-ticking three boxes every reload is worse than starting where you left
+   * off. They still default to Basic for a first-run user.
+   *
+   * Deliberately NOT `settingsSpec` entries: a registry entry would render them
+   * as ordinary rows inside a group, and these have to be the first blade in
+   * their panel, above the group they govern. `ui/advancedToggle.ts` builds
+   * them.
+   */
+  readonly advancedProject: boolean;
+  readonly advancedPreferences: boolean;
+  readonly advancedDrawing: boolean;
+
+  /**
+   * Which layout to build: 0 auto, 1 always touch, 2 always desktop.
+   *
+   * **AN INDEX RATHER THAN A STRING**, matching `boundaryConditions` and every
+   * other CHOICE in the registry. `PREFERENCE_KINDS` has no string kind and this
+   * is not the setting to add one for: the panel renders a dropdown from
+   * `options` and stores the index, so an index is what round-trips through
+   * `localStorage` and through `coerce` with no new machinery. `MOBILE_MODES` in
+   * `ui/mobile.ts` is the matching label list, and the two are tied together by
+   * `mobileModeFromValue`.
+   *
+   * **READ ONCE, AT STARTUP, AND NOT LIVE.** Everything else in this file takes
+   * effect on the next frame; this one does not, because the layout is BUILT
+   * from it rather than styled by it -- panels mount different containers and
+   * the menu binds different events. Changing it asks for a reload, which is
+   * what the registry entry's help text says.
+   *
+   * `AUTO` defers to `detectMobile`. The two overrides exist because detection
+   * will be wrong for somebody -- a hybrid device, an unusual window -- and
+   * being stuck in a layout whose only fix lives inside that layout is a dead
+   * end. It is also how the touch layout gets tested from a desktop.
+   */
+  readonly mobileMode: number;
+
+  // --- calibration ----------------------------------------------------------
+  /**
+   * Which `CALIBRATION_VERSION` first-run GPU calibration last ran under, or 0
+   * if it never has. Read it through `isCalibrated`.
+   *
+   * **THIS IS THE ONLY FIRST-VISIT SIGNAL THE APP HAS.** `load()` seeds from
+   * `DEFAULT_PREFERENCES` and overlays whatever `localStorage` held, so "no
+   * stored record" and "a stored record" collapse into the same `Preferences`
+   * value and are otherwise indistinguishable downstream. A visitor with no
+   * record gets the default 0 here; anyone who has calibrated carries the
+   * version forward and is not probed again until `CALIBRATION_VERSION` moves.
+   *
+   * A VERSION RATHER THAN A FLAG so a change that shifts what the machine can
+   * afford -- a much faster shader -- can ask everyone to recalibrate. The old
+   * boolean `calibrated` key is simply no longer read, which makes every record
+   * written before the version existed count as version 0.
+   *
+   * SET EVEN WHEN CALIBRATION FAILS OR IS CUT SHORT. A probe that threw, or a
+   * splash the user clicked through after two rungs, still counts as done --
+   * otherwise every subsequent load would re-run a calibration that has already
+   * shown it cannot finish, and the cost would recur forever.
+   *
+   * `resetPreferences` adopts `DEFAULT_PREFERENCES` wholesale, so this returns
+   * to 0 and the next load re-calibrates. That is deliberate: a reset is
+   * exactly when the settings should be re-derived rather than left where a
+   * since-changed machine last put them.
+   *
+   * Deliberately NOT a `settingsSpec` entry, for the reason the three
+   * `advanced*` flags above are not: it is bookkeeping, not a control. There is
+   * nothing here a user would meaningfully drag.
+   */
+  readonly calibrationVersion: number;
+}
+
+/**
+ * Bump to make every returning user recalibrate on their next visit.
+ *
+ * 1: entity update stopped deriving each particle's rule every step (the
+ *    per-cohort config slots), which made it several times faster -- so every
+ *    Physics Rate calibrated before that under-uses the machine.
+ * 2: on phones, the black box became a loop instead of hand-unrolled, and the
+ *    trail splat became an atomic deposit instead of a render pass -- together
+ *    several times faster on a Pixel 4a, so phones calibrated before them
+ *    under-use the machine. Desktops were unaffected but recalibrate too.
+ */
+export const CALIBRATION_VERSION = 2;
+
+/** Whether first-run calibration has run under the current version. */
+export function isCalibrated(prefs: Preferences): boolean {
+  return prefs.calibrationVersion >= CALIBRATION_VERSION;
+}
+
+/** `preferences.py:35-92`'s dataclass defaults, verbatim. */
+export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
+  brightness: 2.0,
+  physicsSteps: 5,
+  tonemapSoftness: 2.5,
+  motionBlurSamples: 1,
+  // ON by default. The counter is how someone learns their machine has room to
+  // spare -- or has none -- and neither is discoverable from a checkbox that
+  // starts off.
+  showFpsCounter: true,
+  // OPEN by default, for the reason the counter above is on by default: a lone
+  // lone button gives no hint what it expands into. See the interface.
+  physicsSliderOpen: true,
+  // SHOWN by default, and the pair above it is deliberate: a new visitor lands
+  // on the widget EXPANDED, because the rate is worth discovering and the
+  // panels start hidden. Folding it to a button, or hiding it outright, are
+  // both things they can then choose. See the interface.
+  showPhysicsSlider: true,
+  bloomEnabled: true,
+  bloomThreshold: 0.2,
+  bloomIntensity: 0.1,
+  bloomRadius: 1.0,
+  drawSize: 0.01,
+  drawPower: 2.5,
+  // Out/Diverge -- index 0 in BRUSH_MODES. THE DEFAULT IN EVERY TOOL, and the
+  // only behaviour this brush had before the other three existed, so a session
+  // that never opens the dropdown draws exactly as it always did.
+  brushMode: 0,
+  // Up. The centre of the -PI..PI range, so the slider starts at its midpoint.
+  drawAngle: 0.0,
+  // 1.0 is the identity: it reproduces the fixed gain that used to be compiled
+  // into the shader, so adding these sliders changed nothing about how a painted
+  // field feels until someone moves one.
+  wallsStrength: 1.0,
+  trailsStrength: 1.0,
+  fieldOpacity: 0.10,
+  fieldAlwaysShow: false,
+  trailsAlwaysShow: false,
+  showReticle: true,
+  resetOnBehaviorChange: true,
+  oneClickSelection: false,
+  // OFF. A research feature that writes a database; nobody gets one without
+  // asking. See the interface.
+  strongLogging: false,
+  worldSize: .50,
+  canvasAspect: 1.0,
+  // Basic for a first-run user. Persisted thereafter -- see the interface.
+  advancedProject: false,
+  advancedPreferences: false,
+  advancedDrawing: false,
+  // AUTO. Detection is right for almost everyone, and the two overrides are
+  // there for when it is not -- see the interface.
+  mobileMode: 0,
+  // Zero is what MAKES someone a first-run user -- see the interface.
+  calibrationVersion: 0,
+});
+
+/**
+ * The declared type of every preference.
+ *
+ * THE PLAN ASKS FOR THIS EXPLICITLY (Step 7): "Replace `_coerce`'s runtime
+ * dataclass field-type read with an explicit type map." The desktop reads
+ * `dataclasses.fields(prefs)` at runtime to learn whether a field is a bool, an
+ * int or a float (`drawing_commands.py:119-131`); TypeScript's types are erased,
+ * so there is nothing to read at runtime and the map has to be written down.
+ *
+ * IT EARNS ITS KEEP BEYOND THE PORT. `drawing_commands.py:110` records why the
+ * desktop needs it: a blanket `float()` lands `1.0` in the file where `true`
+ * belongs. Here it does the same job AND validates what comes back out of
+ * `localStorage`, which is untyped JSON that a user can hand-edit.
+ *
+ * `satisfies` ties it to `Preferences`, so adding a preference without adding
+ * its type is a compile error rather than a field that silently stops being
+ * coerced.
+ */
+export const PREFERENCE_KINDS = {
+  brightness: 'float',
+  physicsSteps: 'int',
+  tonemapSoftness: 'float',
+  motionBlurSamples: 'int',
+  showFpsCounter: 'bool',
+  physicsSliderOpen: 'bool',
+  showPhysicsSlider: 'bool',
+  bloomEnabled: 'bool',
+  bloomThreshold: 'float',
+  bloomIntensity: 'float',
+  bloomRadius: 'float',
+  drawSize: 'float',
+  drawPower: 'float',
+  // An INDEX into `BRUSH_MODES`, so 'int' -- the same reasoning as `mobileMode`
+  // below. `brushModeFor` degrades an out-of-range value to the default.
+  brushMode: 'int',
+  drawAngle: 'float',
+  wallsStrength: 'float',
+  trailsStrength: 'float',
+  fieldOpacity: 'float',
+  fieldAlwaysShow: 'bool',
+  trailsAlwaysShow: 'bool',
+  showReticle: 'bool',
+  resetOnBehaviorChange: 'bool',
+  oneClickSelection: 'bool',
+  strongLogging: 'bool',
+  worldSize: 'float',
+  canvasAspect: 'float',
+  advancedProject: 'bool',
+  advancedPreferences: 'bool',
+  advancedDrawing: 'bool',
+  // An INDEX into `MOBILE_MODES`, so 'int' -- see the interface for why this is
+  // not a string. `coerce` truncates, and an out-of-range index degrades to
+  // AUTO at the one place that reads it (`mobileModeFromValue`).
+  mobileMode: 'int',
+  calibrationVersion: 'int',
+} as const satisfies Record<keyof Preferences, 'float' | 'int' | 'bool'>;
+
+export type PreferenceKey = keyof Preferences;
+
+/** Every preference name, for iteration and for filtering unknown keys. */
+export const PREFERENCE_KEYS = Object.keys(PREFERENCE_KINDS) as readonly PreferenceKey[];
+
+export function isPreferenceKey(name: string): name is PreferenceKey {
+  return Object.prototype.hasOwnProperty.call(PREFERENCE_KINDS, name);
+}
+
+/**
+ * `value` as whatever type `key` is declared to hold, or `null` if it cannot be.
+ *
+ * The port of `_coerce` (`drawing_commands.py:119-131`) plus the validation the
+ * Python does not do. Returning `null` rather than a fallback is what lets both
+ * callers do the right and DIFFERENT thing: `load` drops the key and keeps the
+ * default, while `withValue` leaves the preferences untouched.
+ *
+ * NON-FINITE IS REJECTED. A `NaN` brightness is not a visible mistake -- it
+ * propagates through the assembler into a black screen with no error anywhere,
+ * the same failure mode `cameraState.setZoom` refuses for the same reason.
+ */
+export function coerce(key: PreferenceKey, value: unknown): number | boolean | null {
+  const kind = PREFERENCE_KINDS[key];
+  if (kind === 'bool') {
+    return typeof value === 'boolean' ? value : null;
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return kind === 'int' ? Math.trunc(value) : value;
+}
+
+/** Where preferences live. Namespaced so it cannot collide on a shared origin. */
+export const STORAGE_KEY = 'fluoddity.preferences';
+
+/**
+ * The `localStorage`-shaped slice this module needs.
+ *
+ * Injectable so `preferences.test.ts` can run under `node --test`, where there
+ * is no `localStorage` at all -- and so the "storage throws" path is testable
+ * rather than merely asserted.
+ */
+export interface PreferenceStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+/**
+ * The browser's `localStorage`, or `null` where there is none.
+ *
+ * MERELY TOUCHING `localStorage` CAN THROW -- a sandboxed iframe raises a
+ * SecurityError on property access, before any method is called. Hence the
+ * try/catch around the read itself rather than around a later `getItem`.
+ */
+export function browserStorage(): PreferenceStorage | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read stored preferences, falling back to the defaults.
+ *
+ * NEVER THROWS -- the Python's contract (`preferences.py:97-101`), and more
+ * important here than there: a corrupt entry in `localStorage` outlives a page
+ * reload, so an exception would make the app permanently unstartable until the
+ * user cleared site data by hand.
+ *
+ * Unknown keys are dropped (downgrade survives), and so are values of the wrong
+ * type (see `coerce`). Each bad key is reported once rather than silently
+ * ignored, because a preference that keeps reverting is otherwise a mystery.
+ */
+export function loadPreferences(
+  storage: PreferenceStorage | null = browserStorage(),
+): Preferences {
+  if (storage === null) return DEFAULT_PREFERENCES;
+
+  let raw: string | null;
+  try {
+    raw = storage.getItem(STORAGE_KEY);
+  } catch (e) {
+    console.warn(`Could not read preferences (${String(e)}); using defaults`);
+    return DEFAULT_PREFERENCES;
+  }
+  if (raw === null) return DEFAULT_PREFERENCES;
+
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch (e) {
+    console.warn(`Could not parse preferences (${String(e)}); using defaults`);
+    return DEFAULT_PREFERENCES;
+  }
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+    return DEFAULT_PREFERENCES;
+  }
+
+  const parsed: Record<string, unknown> = data as Record<string, unknown>;
+  const result: Record<string, unknown> = { ...DEFAULT_PREFERENCES };
+  const rejected: string[] = [];
+  for (const [key, value] of Object.entries(parsed)) {
+    if (!isPreferenceKey(key)) continue; // a newer version's field; drop it
+    const coerced = coerce(key, value);
+    if (coerced === null) {
+      rejected.push(key);
+      continue;
+    }
+    result[key] = coerced;
+  }
+  if (rejected.length > 0) {
+    console.warn(
+      `Ignoring stored preferences with unusable values: ${rejected.join(', ')}`,
+    );
+  }
+  return Object.freeze(result as unknown as Preferences);
+}
+
+/**
+ * Write preferences. Failure is reported, never thrown.
+ *
+ * `setItem` throws on a full or disabled store (Safari private mode being the
+ * usual case), and losing the ability to PERSIST a preference must not lose the
+ * ability to SET one -- the in-memory value has already been adopted by the
+ * time this is called.
+ */
+export function savePreferences(
+  prefs: Preferences,
+  storage: PreferenceStorage | null = browserStorage(),
+): void {
+  if (storage === null) return;
+  try {
+    storage.setItem(STORAGE_KEY, JSON.stringify(prefs));
+  } catch (e) {
+    console.warn(`Could not write preferences: ${String(e)}`);
+  }
+}
+
+/**
+ * A copy with one field changed, coerced to the field's declared type.
+ *
+ * Returns the RECEIVER UNCHANGED when the name is unknown, the value is
+ * unusable, or the value already equals what is stored. That last case is not
+ * an optimization: `_cmd_edit_draw_pref` records why the desktop needs it
+ * (`drawing_commands.py:107-110`) -- a slider reports "changed" on frames where
+ * the value did not move, and each of those would otherwise be a write. Here
+ * the same guard also keeps reference identity meaningful, so a caller can use
+ * `next !== prev` to decide whether to save.
+ */
+export function withValue(
+  prefs: Preferences,
+  name: string,
+  value: unknown,
+): Preferences {
+  if (!isPreferenceKey(name)) return prefs;
+  const coerced = coerce(name, value);
+  if (coerced === null) return prefs;
+  if (prefs[name] === coerced) return prefs;
+  return Object.freeze({ ...prefs, [name]: coerced });
+}
+
+/**
+ * True if moving to `other` needs the simulation rebuilt.
+ *
+ * World size and canvas aspect determine the GPU allocation (entity count and
+ * canvas resolution), so changing either means building a new `ParticleSystem`
+ * rather than adjusting this one. This is why those two controls are typed
+ * INPUTs rather than sliders -- dragging would rebuild on every frame of the
+ * drag.
+ */
+export function requiresRestart(prefs: Preferences, other: Preferences): boolean {
+  return (
+    prefs.worldSize !== other.worldSize || prefs.canvasAspect !== other.canvasAspect
+  );
+}
+
+/**
+ * The display subset the camera and assembler read.
+ *
+ * Step 5's `DisplayPreferences` was this whole interface's stand-in. Keeping
+ * the alias means `assembler.present(...)` and `camera` keep their narrow
+ * parameter type -- they have no business reading `worldSize` -- while there is
+ * now exactly ONE Preferences object in the app rather than two that can drift.
+ */
+export type DisplayPreferences = Pick<
+  Preferences,
+  | 'brightness'
+  | 'physicsSteps'
+  | 'tonemapSoftness'
+  | 'motionBlurSamples'
+  | 'bloomEnabled'
+  | 'bloomThreshold'
+  | 'bloomIntensity'
+  | 'bloomRadius'
+  | 'fieldOpacity'
+>;
+
+/**
+ * What a Walls Field Strength of 1.0 means, per physics step.
+ *
+ * **THIS IS THE OLD `STRAFE_FIELD_GAIN`,** moved out of `common.wgsl` when the
+ * constant became a slider. Keeping the number identical is what makes the
+ * default a no-op: a field painted before these controls existed displaces
+ * particles by exactly what it always did.
+ */
+export const WALLS_FIELD_GAIN = 0.01;
+
+/**
+ * What a Trails Field Strength of 1.0 means.
+ *
+ * ## This one had no predecessor, so it was TUNED BY EYE rather than inherited
+ *
+ * Walls converts a constant that already existed, so its value was fixed by
+ * having to reproduce the old behaviour. Trails is a new path -- the painted
+ * vector is added to the CANVAS SAMPLE the sensors read -- so there was no
+ * previous behaviour to match and nothing to derive the scale from.
+ *
+ * An estimate from the deposit formula put this near 1.0, on the reasoning that
+ * the brush lays down ~0.5 per frame at default power while descaled canvas
+ * values sit in the low single digits, so the two are already commensurate.
+ * **That estimate was three orders of magnitude too hot in practice**, because it
+ * accounted for the magnitudes and not for the fact that a painted trail is
+ * PERMANENT while a simulated one decays every step -- so a stroke that merely
+ * matches the canvas instantaneously ends up dominating what the sensors see
+ * within a second. The working value came from drawing with it.
+ *
+ * Kept as a named constant, and separate from `WALLS_FIELD_GAIN`: the two feed
+ * different shader paths, and a retune of one must not silently move the other.
+ * `DEFAULT_FIELD_STRENGTHS` mirrors this number in `particleSystem/uniforms.ts`
+ * (which may not import this module) and `preferences.test.ts` asserts the two
+ * agree -- that test is what caught this value changing without its mirror.
+ */
+export const TRAILS_FIELD_GAIN = 0.001;
+
+/**
+ * The strengths the entity update reads, derived from the two sliders.
+ *
+ * **THE ONE PLACE THE GAINS ARE APPLIED.** The shader multiplies by nothing
+ * further, so a reader who wants to know what a slider of 2.0 does looks here and
+ * nowhere else. Splitting the conversion across host and shader is how the two
+ * drift apart, which is the trap the old arrangement -- a slider here and a
+ * constant in `common.wgsl` -- would have set.
+ */
+export function fieldStrengthsFor(prefs: Preferences): {
+  readonly walls: number;
+  readonly trails: number;
+} {
+  return {
+    walls: prefs.wallsStrength * WALLS_FIELD_GAIN,
+    trails: prefs.trailsStrength * TRAILS_FIELD_GAIN,
+  };
+}

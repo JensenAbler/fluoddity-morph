@@ -1,0 +1,953 @@
+/**
+ * The command and status API: the UI/simulation boundary, made typed.
+ *
+ * ## What this file is for
+ *
+ * `ARCHITECTURE.md` invariant 10 says `ui/` imports no simulation module, and on
+ * the desktop that is enforced rather than aspirational: `toolbar.py` mirrors
+ * `MouseMode` by string VALUE, and `ui.py:384` duck-types to avoid importing
+ * `PickResult`. The price is that the boundary is two untyped dicts -- a
+ * 29-entry command table (`orchestrator.py:206-244`) and a 30-key status dict
+ * (`STATUS_KEYS`, `:518-539`), both keyed by bare strings.
+ *
+ * **The plan names typing them "the port's job" (Step 7), and this is it.** The
+ * boundary stays exactly as narrow as it was; what changes is that a typo is
+ * now a compile error instead of a `KeyError` at the moment a menu is opened.
+ *
+ * ## Why a discriminated union rather than an interface of methods
+ *
+ * A method-per-command interface would be the idiomatic TypeScript, and it is
+ * the wrong shape here for one specific reason: the desktop's UI *holds* the
+ * command table and dispatches by name, which is what lets `toolbar.py` build
+ * itself from a list without knowing what any button does. A union preserves
+ * that -- a UI can construct a `Command` value, pass it around, log it, or defer
+ * it -- while the `switch` in `orchestrator.ts` gets exhaustiveness checking
+ * that the Python's dict lookup never had.
+ *
+ * It also makes the ARGUMENTS typed, which the dict never did: `set_mouse_mode`
+ * took a string OR a `MouseMode` (`selection_commands.py:162`) precisely because
+ * nothing could check it.
+ *
+ * ## The status contract, and the guarantee that makes it usable
+ *
+ * `_report_status()` supplies EVERY key, every frame, before the UI builds a
+ * single panel -- which is why desktop UI code indexes `self._status['key']`
+ * rather than defending itself with `.get(key, fallback)`. A missing key means
+ * the Orchestrator forgot one, which is a bug worth hearing about, not something
+ * to paper over with a default that silently renders as '-' forever
+ * (`orchestrator.py:508-517`; three keys once carried DIFFERENT defaults at
+ * different call sites).
+ *
+ * `Status` below is a total interface with no optional members, so TypeScript
+ * enforces that guarantee at the one place the object is built. That is
+ * strictly stronger than the tuple of key names it replaces.
+ */
+
+import type { Easing, MorphView } from '../morph/morph.ts';
+import type { EvolveSettings, EvolveView } from '../evolve/evolve.ts';
+import type { SavedConfig } from '../config/persistence.ts';
+import type { PickResult } from '../particleSystem/pick.ts';
+import type { Setting } from '../ui/settingsSpec.ts';
+import type { Preferences } from '../prefs/preferences.ts';
+import type { FieldLayer } from '../strafeField/fieldLayer.ts';
+
+/**
+ * What the mouse does on the canvas. The active TOOL.
+ *
+ * Exists because several behaviours all want the left button -- without a mode,
+ * every click would select a particle on the way down and paint on the way
+ * across.
+ *
+ *   SELECT  click adopts a particle's rule, right-click undoes.
+ *   SHOVE   drag pushes particles away from the cursor, right-drag pulls in.
+ *   WALLS   drag paints the walls layer, right-drag erases it.
+ *   TRAILS  drag paints the trails layer, right-drag erases it.
+ *
+ * SHOVE and the two painting tools are easy to confuse and worth stating apart:
+ * Shove acts on the PARTICLES, directly and only while the button is held. The
+ * others paint a FIELD, which then keeps acting on whatever crosses it until it
+ * is erased.
+ *
+ * **WALLS AND TRAILS DIFFER ONLY IN WHICH CHANNELS THEY WRITE.** Every mechanic
+ * -- brush size, power, mode, erase, the line tool -- is identical between them
+ * (`FieldLayer` is the whole difference). What differs is what the simulation
+ * then does with the result: walls displace a particle's position, trails change
+ * what its sensors report. See `fieldLayer.ts`.
+ *
+ * **`'draw'` WAS RENAMED TO `'walls'`** when trails made "draw" ambiguous. Safe
+ * to rename because this value is runtime-only: it is not persisted, not in a
+ * share link, not in a save file, and it resets to `'select'` every session -- so
+ * no stored string can carry the old name. `mouseModeFromValue` returns null on
+ * anything unrecognized regardless.
+ *
+ * THERE IS NO PAN TOOL. Navigation is on the keyboard (WASD/QE) and the scroll
+ * wheel, which frees the mouse for tools entirely.
+ *
+ * **MEMBER ORDER IS THE TOOLBAR ORDER** and the 1/2/3/4 key order -- the toolbar
+ * builds itself from this array, so adding a tool here adds a button. An
+ * ordered array rather than an object for the same reason `CAMERA_MODES` is one:
+ * the order is the semantics.
+ */
+export const MOUSE_MODES = ['select', 'shove', 'walls', 'trails'] as const;
+export type MouseMode = (typeof MOUSE_MODES)[number];
+
+/** Look up a mode by its string value, or `null` if unknown. */
+export function mouseModeFromValue(value: string): MouseMode | null {
+  return (MOUSE_MODES as readonly string[]).includes(value)
+    ? (value as MouseMode)
+    : null;
+}
+
+/**
+ * The layer a painting tool writes, or `null` for the tools that paint nothing.
+ *
+ * **THE ONE PLACE THAT MAPS TOOL TO LAYER.** Everything downstream -- which
+ * pipeline a stroke uses, which overlay is forced on, which Clear button the hint
+ * bar shows -- asks this rather than testing the mode against string literals.
+ * That is what makes "is this a painting tool?" a single question with a single
+ * answer, instead of two comparisons that can be updated separately and drift.
+ */
+export function layerForMouseMode(mode: MouseMode): FieldLayer | null {
+  if (mode === 'walls') return 'walls';
+  if (mode === 'trails') return 'trails';
+  return null;
+}
+
+/** True for the tools that paint a field, i.e. the ones the brush serves. */
+export function isPaintingTool(mode: MouseMode): boolean {
+  return layerForMouseMode(mode) !== null;
+}
+
+/**
+ * True for every tool the brush RETICLE is drawn for.
+ *
+ * Wider than `isPaintingTool` by exactly one: Shove borrows `drawSize` for its
+ * radius, so the ring means something there too -- "the reach of what the button
+ * is about to do". It is drawn dashed in that tool to say which is armed.
+ */
+export function usesBrushReticle(mode: MouseMode): boolean {
+  return isPaintingTool(mode) || mode === 'shove';
+}
+
+/** Where the brush reticle goes this frame, or null for no reticle. */
+export interface ReticlePlacement {
+  /** True to draw it at the centre of the canvas rather than under the cursor. */
+  readonly centred: boolean;
+  /**
+   * True to keep the tool's own decoration -- Shove's dashes, the brush modes'
+   * rays and arrow. False means the bare ring.
+   */
+  readonly decorated: boolean;
+}
+
+/**
+ * Whether to draw the brush reticle, and where.
+ *
+ * **A PURE FUNCTION so the rule can be tested without a GPU.** `overlayState`
+ * needs a live device, a camera and a field to produce a single boolean pair,
+ * and this is the part of it worth pinning down -- the interaction between the
+ * tool gate and the sizing gesture is the whole of the logic and none of the
+ * plumbing. Same argument `shoveCommands.ts` makes for being a free function.
+ *
+ * `sizing` is an active Brush Size drag. It OVERRIDES the tool gate, because
+ * sizing the brush is precisely when you need to see how big it is -- and it
+ * CENTRES the ring, because during that drag the cursor is over the slider in a
+ * side panel rather than over the artwork.
+ *
+ * It also drops the decoration outside the brush tools: the rays and dashes say
+ * what the armed brush would DO, and in Select nothing is armed. Inside a brush
+ * tool the decoration stays, since the ring still means exactly what it always
+ * meant and only its position has moved.
+ */
+export function reticlePlacement(
+  mode: MouseMode,
+  sizing: boolean,
+): ReticlePlacement | null {
+  const brushing = usesBrushReticle(mode);
+  if (!brushing && !sizing) return null;
+  return { centred: sizing, decorated: brushing };
+}
+
+/**
+ * The five drawing preferences, as a closed set.
+ *
+ * `editDrawPref` carried a bare `string` field through Steps 7-9, which made it
+ * **the one command in this file whose payload the compiler could not check** --
+ * exactly the failure the header says this boundary exists to eliminate. A typo
+ * routed to `withValue`, which returns its receiver unchanged for an unknown
+ * field, so the slider moved and nothing happened, silently.
+ *
+ * Narrowed in Step 10 rather than earlier because Step 10 is the first caller
+ * that builds these controls from a table (`ui/sections/drawingSection.ts`) and
+ * so the first that could get a name wrong without a human reading the line.
+ *
+ * These are deliberately NOT registry entries: five widgets in a dedicated
+ * section are not the registry's shape, and routing them through it would mean
+ * fabricating `Setting` objects to satisfy a signature
+ * (`ui/drawing_window.py:4-8`).
+ */
+export const DRAW_PREF_FIELDS = [
+  'drawSize',
+  'drawPower',
+  'brushMode',
+  'drawAngle',
+  'wallsStrength',
+  'trailsStrength',
+  'fieldOpacity',
+  'fieldAlwaysShow',
+  'trailsAlwaysShow',
+  'showReticle',
+] as const;
+export type DrawPrefField = (typeof DRAW_PREF_FIELDS)[number];
+
+/**
+ * Boolean preferences that configure the INTERFACE, as a closed set.
+ *
+ * A SEPARATE set from `DRAW_PREF_FIELDS` rather than a widening of it, for the
+ * same reason that one was narrowed in the first place: each is a closed list
+ * whose members share a meaning, and merging them would produce one list whose
+ * members do not. A brush setting and a view mode are not interchangeable, and
+ * a command that accepted either could carry `drawSize` where a tier belongs.
+ *
+ * Both land in the same `Preferences` record through the same `withValue` path;
+ * the split is about what the compiler will let a caller say, not about storage.
+ *
+ * **WHAT MAKES A FIELD BELONG HERE** is not that it is a tier -- for a while
+ * these were only the three Advanced flags -- but that it governs how the
+ * editor is ARRANGED, persists, has no `settingsSpec` entry, and is neither
+ * recorded in history nor able to force a rebuild. `physicsSliderOpen` meets
+ * all four: it decides whether a control is folded away, exactly as the tiers
+ * decide whether a group of controls is shown.
+ *
+ * A field with a registry entry does NOT belong here, however interface-shaped
+ * it looks -- `showFpsCounter` is a panel row and travels by `editSetting` like
+ * every other row, and giving it a second route would be two ways to write one
+ * field.
+ */
+export const VIEW_PREF_FIELDS = [
+  'advancedProject',
+  'advancedPreferences',
+  'advancedDrawing',
+  'physicsSliderOpen',
+] as const;
+export type ViewPrefField = (typeof VIEW_PREF_FIELDS)[number];
+
+/**
+ * Which hover-browsing surface a preview command belongs to.
+ *
+ * **Two surfaces browse config collections by hovering** -- the Load menu and
+ * the checkpoint menu -- and both take a snapshot on open so unhovering can put
+ * things back. With ONE shared snapshot slot, hovering a checkpoint while the
+ * Load menu is also open overwrites the menu's snapshot, and unhovering restores
+ * the wrong state. `ui/hover_preview.py:13-19` records that as a bug that
+ * actually happened, and the fix there was to give each surface its own session.
+ *
+ * The desktop's Orchestrator nevertheless still keeps a single `_preview_origin`
+ * (`orchestrator.py:198-201`), safe today "only because both surfaces are
+ * submenus of the same menu bar". This token is what makes that safety
+ * structural rather than incidental: the origin is a `Map` keyed by surface, so
+ * two open browsers cannot see each other's snapshot at all.
+ *
+ * A token rather than two separate commands because `prePreviewProject` has to
+ * know WHICH surface a committed load should record against -- with two
+ * independent fields it would have to guess.
+ */
+export const PREVIEW_SURFACES = ['load', 'checkpoint'] as const;
+export type PreviewSurface = (typeof PREVIEW_SURFACES)[number];
+
+/**
+ * An in-session snapshot of the whole project.
+ *
+ * Holds a `Project` rather than a bare config list, so restoring one restores
+ * the name and selection too. `key` is an opaque id rather than the name, so
+ * the hover-preview machinery keeps tracking the right entry even if two
+ * checkpoints ever share a name (`clipboard_commands.py:20-33`).
+ *
+ * The `Project` import is deliberately absent here: a checkpoint crossing to
+ * the UI carries only what the UI displays. `orchestrator.ts` holds the real
+ * one. See `CheckpointView`.
+ */
+export interface CheckpointView {
+  readonly name: string;
+  readonly key: number;
+}
+
+/**
+ * Every command the UI can issue.
+ *
+ * The 26 handlers behind `orchestrator.py:206-244`'s 29 entries. Three of the
+ * Python's names are aliases (`clipboard_snapshot`/`clipboard_restore` share
+ * handlers with `snapshot_configs`/`restore_configs`); those aliases are kept
+ * as distinct members below for the reason the Python keeps them -- they are
+ * the UI's vocabulary, and a future divergence should not need a UI change.
+ *
+ * ## The storage commands name `(category, name)`, not an entry object
+ *
+ * `loadConfig`, `deleteConfig` and `previewConfig` take two strings rather than
+ * a `ConfigEntry`. The UI holds a `CommandBus` and nothing else, and a
+ * `ConfigEntry` would be a STORAGE type crossing into the panel -- it carries a
+ * `source` discriminator and a manifest path, neither of which the UI has any
+ * business knowing. Two strings are data. `ConfigStore.entry()` resolves them,
+ * and an unknown pair reports through `saveError` rather than throwing: a preset
+ * deleted in another tab must not crash the one you are in.
+ *
+ * ## These are asynchronous, and `dispatch` still returns void
+ *
+ * Storage is async and the bus is not. Handlers start the work, return
+ * immediately, and report through `Status` -- which the panel reads every frame
+ * anyway. Making `dispatch` async would turn every button click into a promise
+ * the caller has to handle, for no gain. See `orchestrator.ts`'s storage cases.
+ */
+export type Command =
+  // --- simple ---
+  | { readonly kind: 'reset' }
+  | { readonly kind: 'togglePause' }
+  | { readonly kind: 'toggleCameraMode' }
+  | { readonly kind: 'resetCamera' }
+  | { readonly kind: 'setMouseMode'; readonly mode: MouseMode }
+  /**
+   * Move the highlight to `cohort` directly, without a pick.
+   *
+   * **RE-AIMS AN EXISTING HIGHLIGHT; IT DOES NOT ADOPT ANYTHING.** The rule a
+   * cohort obeys is derived on the GPU (`rule.wgsl`'s `mutate_rule`) and
+   * deliberately has no host mirror -- `pick.ts` explains why, and calls a
+   * wrongly-adopted rule the worst failure mode available. So this changes what
+   * is LIT and nothing else; committing still goes through a real pick.
+   *
+   * Out-of-range values WRAP rather than clamp, because the stepper's arrows are
+   * for cycling and stopping dead at either end would make the last cohort feel
+   * like a wall. The Orchestrator wraps, not the UI, so typing and clicking an
+   * arrow cannot disagree about what 64 means with 64 cohorts.
+   */
+  | { readonly kind: 'setHighlightedCohort'; readonly cohort: number }
+  /**
+   * Move the highlight by `delta` cohorts, wrapping.
+   *
+   * The RELATIVE form of `setHighlightedCohort`, for the LEFT/RIGHT arrows. A
+   * key cannot send the absolute form the stepper buttons do: those read the
+   * current value out of their own input field, and a hotkey has no field to
+   * read. Resolving the delta against the live highlight in the Orchestrator is
+   * the only place that value is authoritative.
+   *
+   * Inherits the same two refusals as the absolute form -- nothing lit, or
+   * highlighting off -- which is what makes the arrows inert rather than
+   * surprising when no cohort is selected.
+   */
+  | { readonly kind: 'stepHighlightedCohort'; readonly delta: number }
+  /**
+   * Adopt the highlighted cohort's behaviour: the Enter key, and the hint
+   * bar's button.
+   *
+   * **STILL GOES THROUGH A PICK**, because the rule it adopts is 80 floats
+   * derived on the GPU and there is no host copy to read. What makes it work
+   * without a cursor is the confirmation snap already in `entityPick.wgsl`:
+   * every member of the highlighted cohort inside `CONFIRM_SNAP_FRACTION` of
+   * the search radius is treated as a direct hit, so a search wide enough to
+   * cover the world resolves to a member of that cohort wherever they are.
+   *
+   * Refused when nothing is lit AND the two-stage highlight is running -- there
+   * is no cohort to confirm. With highlighting OFF (one-click selection, or a
+   * single-cohort config) it commits the particle nearest the centre, which is
+   * what one click would have done anyway.
+   */
+  | { readonly kind: 'confirmSelection' }
+  /**
+   * Put out the highlight without adopting anything: the hint bar's Cancel
+   * Selection button.
+   *
+   * **THE AIM-CANCELLING HALF OF RIGHT-CLICK, AND ONLY THAT HALF.** A
+   * right-click on the canvas cancels an aim when one is running and undoes
+   * otherwise (`applyCanvasInput`); this command is the first branch alone. The
+   * button that sends it is only ever on screen while a cohort is lit, so the
+   * branch it would have taken is the only one it can mean -- and a button that
+   * silently became Undo in some other state would be far worse than one that
+   * does nothing there.
+   *
+   * Refused when nothing is lit, which makes it inert rather than surprising if
+   * it is ever dispatched from a state the button does not appear in.
+   */
+  | { readonly kind: 'cancelSelection' }
+  | { readonly kind: 'undo' }
+  | { readonly kind: 'redo' }
+  // --- presets: the LEFT/RIGHT cycle over the whole catalog ---
+  | { readonly kind: 'nextPreset' }
+  | { readonly kind: 'prevPreset' }
+  | { readonly kind: 'loadPreset'; readonly name: string }
+  // --- storage. See the header on why these carry (category, name). ---
+  | { readonly kind: 'saveConfig'; readonly name: string }
+  | { readonly kind: 'loadConfig'; readonly category: string; readonly name: string }
+  | { readonly kind: 'deleteConfig'; readonly category: string; readonly name: string }
+  /**
+   * Apply a config for hover-preview: settings only, no camera, no history.
+   *
+   * Browsing forty configs must not leave forty undo entries
+   * (`project_commands.py:161-165`), and it must not move the view either.
+   */
+  | {
+      readonly kind: 'previewConfig';
+      readonly category: string;
+      readonly name: string;
+      /** Which browser is hovering. See `PreviewSurface`. */
+      readonly surface: PreviewSurface;
+    }
+  /**
+   * Reload the project from wherever it was loaded or last saved.
+   *
+   * The desktop's Ctrl+R. NO KEY IS BOUND to it here: Step 8's table is
+   * Ctrl-free so the browser keeps Ctrl+R for page reload, and picking a bare
+   * key for it is a UI decision that belongs with Step 10's real interface. The
+   * command exists so the path is built and testable meanwhile.
+   */
+  | { readonly kind: 'revertConfig' }
+  /**
+   * Adopt a project that arrived on a share link, mid-session.
+   *
+   * UNDOABLE, unlike the same project arriving in the URL at startup. The two
+   * look alike and are not: at startup there is nothing to lose, so recording
+   * history would only offer to "undo" into a default preset the user never
+   * saw. Here it REPLACES whatever they were working on, which is exactly the
+   * situation undo exists for.
+   *
+   * Carries a parsed `SavedConfig` rather than the URL text, so the Orchestrator
+   * never has to know what a URL is -- decoding belongs to `shareLink.ts` and
+   * validation to `persistence.ts`, both of which have run by the time this is
+   * dispatched.
+   */
+  | { readonly kind: 'loadSharedConfig'; readonly saved: SavedConfig; readonly name: string }
+  | { readonly kind: 'clearSaveError' }
+  // --- config clipboard: in-session checkpoints ---
+  | { readonly kind: 'setCheckpoint' }
+  | { readonly kind: 'deleteCheckpoint'; readonly key: number }
+  | { readonly kind: 'loadCheckpoint'; readonly key: number }
+  | { readonly kind: 'loadLatestCheckpoint' }
+  | { readonly kind: 'clipboardApply'; readonly key: number }
+  | { readonly kind: 'snapshotConfigs'; readonly surface: PreviewSurface }
+  | { readonly kind: 'restoreConfigs'; readonly surface: PreviewSurface }
+  // --- settings ---
+  | {
+      readonly kind: 'editSetting';
+      readonly setting: Setting;
+      readonly value: number | boolean;
+      /**
+       * False when the caller records the step itself, so a compound edit does
+       * not leave two entries. `settings_commands.py:21`'s `record=True`.
+       */
+      readonly record?: boolean;
+    }
+  | { readonly kind: 'randomizeSeed' }
+  /**
+   * Cohorts plus a grid layout, applied and reset as ONE act.
+   *
+   * Both fields move together for the same reason `randomizeBehavior` moves
+   * two: "show me N groups laid out" is a single intent, and sending two
+   * `editSetting`s would leave two entries in history for one click. The reset
+   * rides along because a new initial-conditions mode is invisible until the
+   * simulation restarts.
+   */
+  | { readonly kind: 'setPopulationLayout'; readonly cohorts: number }
+  /**
+   * The Camera tab's "works best with" button: Random initial conditions and a
+   * high Hazard Rate on the selected config, as ONE undo step -- one click, one
+   * intent, like `setPopulationLayout`. See `applyCameraSetup`.
+   */
+  | { readonly kind: 'applyCameraSetup' }
+  | { readonly kind: 'randomizeBehavior' }
+  // --- drawing (the field arrives in Step 9; the prefs are live now) ---
+  | {
+      readonly kind: 'editDrawPref';
+      /** Closed set, so a typo is a compile error. See `DrawPrefField`. */
+      readonly field: DrawPrefField;
+      readonly value: number | boolean;
+    }
+  // Clears ONE layer. The layer is explicit rather than implied by the active
+  // tool, because the two callers want different things: the Drawing Controls
+  // offer both buttons at once, while the hint bar's single button is contextual
+  // and resolves the tool to a layer before sending.
+  | { readonly kind: 'clearStrafeField'; readonly layer: FieldLayer }
+  // --- view mode ------------------------------------------------------------
+  // Its own command rather than a case of `editDrawPref`: see `ViewPrefField`.
+  // Never recorded in history -- these say how you are LOOKING at the project,
+  // not what it contains, and an undo that flipped a checkbox back or unfolded
+  // a slider would be answering a question nobody asked.
+  | {
+      readonly kind: 'editViewPref';
+      readonly field: ViewPrefField;
+      readonly value: boolean;
+    }
+  /**
+   * Put every editor preference back to its shipped default.
+   *
+   * **PREFERENCES ONLY.** Saved configs live in IndexedDB and the live project
+   * lives in memory; this touches neither, which is what makes it safe to offer
+   * as a single menu item beside Reset View. It is the in-app form of clearing
+   * `localStorage`'s `fluoddity.preferences`.
+   *
+   * IT IS ALSO THE ONLY WAY BACK TO THE DEFAULTS once a blob has been stored:
+   * `loadPreferences` seeds from `DEFAULT_PREFERENCES`, but a stored record
+   * already holds every key, so changing a default never reaches a user who has
+   * touched any preference.
+   *
+   * NOT RECORDED IN HISTORY, for the reason `editViewPref` is not: preferences
+   * are how your editor is set up, not a change to the project, and an undo that
+   * put your brightness back would be answering a question nobody asked. That
+   * absence of an undo is exactly why the UI confirms it -- see `dialogs.ts`.
+   */
+  | { readonly kind: 'resetPreferences' }
+  // --- morph timeline: animate between saved states -------------------------
+  // See `src/morph/morph.ts`. None of these record history: a timeline is a
+  // way of LOOKING at states, and playback would otherwise flood the undo
+  // stack with one entry per frame.
+  /** Capture the live project as a new keyframe at the end of the timeline. */
+  | { readonly kind: 'morphAddCurrent' }
+  /** Append an in-session checkpoint as a keyframe. */
+  | { readonly kind: 'morphAddCheckpoint'; readonly key: number }
+  /** Overwrite a keyframe with the live project. */
+  | { readonly kind: 'morphReplace'; readonly key: number }
+  | { readonly kind: 'morphRemove'; readonly key: number }
+  | { readonly kind: 'morphClear' }
+  | { readonly kind: 'morphMove'; readonly key: number; readonly delta: number }
+  | {
+      readonly kind: 'morphSetTiming';
+      readonly key: number;
+      readonly hold?: number;
+      readonly duration?: number;
+    }
+  /** Show a keyframe on its own (stops playback, parks the playhead there). */
+  | { readonly kind: 'morphJump'; readonly key: number }
+  | { readonly kind: 'morphPlay' }
+  | { readonly kind: 'morphStop' }
+  | { readonly kind: 'morphSeek'; readonly time: number }
+  | { readonly kind: 'morphSetLoop'; readonly loop: boolean }
+  | { readonly kind: 'morphSetEasing'; readonly easing: Easing }
+  | { readonly kind: 'morphSetResetOnPlay'; readonly reset: boolean }
+  // --- auto-evolve: wander between liked states ------------------------------
+  | { readonly kind: 'evolveStart'; readonly restart?: boolean }
+  | { readonly kind: 'evolveStop' }
+  /** Capture what is on screen (baked) as a new attractor. */
+  | { readonly kind: 'evolveLike' }
+  | { readonly kind: 'evolveAdjustLikes'; readonly key: number; readonly delta: number }
+  | { readonly kind: 'evolveRemove'; readonly key: number }
+  | { readonly kind: 'evolveRename'; readonly key: number; readonly name: string }
+  /** Stop evolving and show one attractor as it is. */
+  | { readonly kind: 'evolveShow'; readonly key: number }
+  | { readonly kind: 'evolveSettings'; readonly settings: Partial<EvolveSettings> }
+  | { readonly kind: 'evolveShuffleSpeeds' }
+  | { readonly kind: 'evolveLayeredSpeeds' }
+  /** Forget the stored pool and re-seed it from the save library. */
+  | { readonly kind: 'evolveResetPool' };
+
+/** Every `Command`'s `kind`, for exhaustiveness assertions in tests. */
+export type CommandKind = Command['kind'];
+
+/**
+ * The Orchestrator -> UI data contract. The typed form of `STATUS_KEYS`.
+ *
+ * TOTAL BY CONSTRUCTION: no member is optional, so the compiler enforces what
+ * the desktop enforces by convention and a comment. Rebuilt every frame, before
+ * the UI reads it.
+ *
+ * Everything here is DISPLAY-ONLY and already flattened to primitives or plain
+ * records -- the UI owns no simulation truth (invariant 10). `selected` is the
+ * one exception and it is deliberate: `PickResult` is a plain readonly value
+ * type with no methods and no GPU handles, so passing it is passing data. The
+ * desktop duck-types around importing it (`ui.py:384`) only because Python has
+ * no way to say "this is just a record".
+ */
+export interface Status {
+  // --- camera / cursor ---
+  readonly mouseWorld: readonly [number, number];
+  readonly camMode: string;
+  readonly camPan: readonly [number, number];
+  readonly camZoom: number;
+  readonly canvasSize: string;
+  readonly windowSize: string;
+
+  // --- simulation ---
+  readonly mouseMode: MouseMode;
+  readonly paused: boolean;
+  readonly preset: string;
+  readonly entityCount: number;
+  readonly frameCount: number;
+  /**
+   * Whether the selected config's rule is the all-zero sentinel -- i.e. its
+   * behaviour is GENERATED from `mutationSeed` rather than mutated from an
+   * authored rule (`entityUpdate.wgsl`).
+   *
+   * **A boolean, not the rule.** `rule` is excluded from `editConfig` because
+   * copying 80 floats every frame is the cost `settingsSources` exists to
+   * avoid, and it must stay excluded -- so the UI cannot derive this itself,
+   * and asking it to would mean importing a project module (invariant 10).
+   *
+   * Lives HERE rather than in `settingsSources` because the mutation overlay
+   * reads it and the overlay refreshes even while the panel is shut
+   * (`panel.ts`), where those payloads are empty.
+   */
+  readonly ruleIsGenerated: boolean;
+
+  /**
+   * Whether the frame-rate button is switched on.
+   *
+   * **NOT read from `editPrefs`, for the reason `ruleIsGenerated` is not read
+   * from `editConfig`:** that payload is EMPTY whenever no panel is open
+   * (`settingsSources`'s optimization), and the FPS counter is deliberately one
+   * of the surfaces that stays on screen when `X` hides the panels. Reading it
+   * from there would make the counter vanish the moment someone hid the UI --
+   * which is the app's default state, and precisely when the counter is most
+   * worth having.
+   *
+   * A named boolean rather than a record entry, so a typo is a compile error.
+   */
+  readonly showFpsCounter: boolean;
+
+  /**
+   * Whether the physics-rate slider is expanded beside its fast-forward button.
+   *
+   * **NOT read from `editPrefs`, for the same reason `showFpsCounter` is not**:
+   * that payload is empty whenever no panel is open, and this control exists
+   * ONLY while the panels are hidden -- so reading it from there would find
+   * `undefined` in every frame it is actually on screen.
+   */
+  readonly physicsSliderOpen: boolean;
+
+  /**
+   * Whether the physics-rate widget is on screen at all.
+   *
+   * **NOT read from `editPrefs`, for the same reason `physicsSliderOpen` is
+   * not**, and the case is even plainer here: this decides whether a control
+   * that exists ONLY while the panels are hidden is mounted, so the one payload
+   * that could carry it is empty in every frame the answer matters.
+   *
+   * Separate from `physicsSliderOpen` because they are different questions --
+   * folded-to-a-button versus gone. See `Preferences.showPhysicsSlider`.
+   */
+  readonly showPhysicsSlider: boolean;
+
+  /**
+   * The live physics rate.
+   *
+   * **NOT read from `editPrefs`, for the reason `showFpsCounter` is not:** that
+   * payload is EMPTY whenever no panel is open (`settingsSources`'s
+   * optimization), and first-run calibration runs with the panels hidden behind
+   * the splash. Auto-calibrate needs the rate the ladder just committed as its
+   * starting point, and reading it from the payload there would find `undefined`
+   * and fall back to the slider's floor -- discarding the rung the ladder had
+   * just spent seconds measuring.
+   */
+  readonly physicsSteps: number;
+
+  /**
+   * The highlighted cohort, or `NO_COHORT` when none is.
+   *
+   * Drives the context hint under the mutation slider and the cohort stepper in
+   * it. Lives HERE rather than in `settingsSources` for the reason
+   * `ruleIsGenerated` does: the overlay reads it, and the overlay refreshes even
+   * while the panel is shut, where those payloads are empty.
+   *
+   * ALREADY GATED by `highlightEnabled`, so this is `NO_COHORT` whenever
+   * highlighting is off (the `oneClickSelection` preference, or a single-cohort
+   * config) as well as when nothing is lit. The UI therefore branches on this
+   * one value instead of re-deriving the two exemptions and risking a hint that
+   * disagrees with what the clicks actually do.
+   */
+  readonly highlightedCohort: number;
+
+  /**
+   * Whether the two-stage cohort highlight is running at all.
+   *
+   * SEPARATE FROM `highlightedCohort`, because "nothing is lit yet" and
+   * "highlighting is switched off" want different words under the slider: the
+   * first promises a cohort selection on the next click, the second promises an
+   * immediate adoption. Collapsing them would make the hint lie about what the
+   * next click does in one of the two cases.
+   *
+   * False for the `oneClickSelection` preference and for a single-cohort config
+   * alike -- the UI has no business re-deriving those two exemptions, and a
+   * second copy of that rule is exactly how a hint drifts from the behaviour it
+   * describes.
+   */
+  readonly highlightEnabled: boolean;
+
+  /**
+   * How many cohorts the selected config has, for the stepper's range.
+   *
+   * The stepper wraps within `0..cohorts-1`, and the UI cannot read this from
+   * `editConfig` -- that payload is empty while the panel is shut, which is
+   * exactly when the overlay is still on screen.
+   */
+  readonly cohortCount: number;
+
+  /**
+   * A one-shot message for the toast, or empty.
+   *
+   * ## Why this crosses the boundary as DATA rather than as a call
+   *
+   * The Orchestrator holds no DOM and reaches no Web API -- the rule
+   * `projectDocument` cites for keeping the clipboard out of it applies just as
+   * well to a toast, which is an element with a timer. So it states WHAT
+   * happened and the panel decides how to say it, exactly as every other field
+   * here works.
+   *
+   * ## Why it is CONSUMED, not merely read
+   *
+   * This is an EVENT, and `Status` is otherwise a snapshot of levels. A level
+   * would re-fire the same toast every frame for as long as it stayed set. The
+   * Orchestrator therefore clears it as `status()` builds -- one reader, one
+   * showing -- which is the same destructive-read shape `retrievePick` uses and
+   * for the same reason.
+   *
+   * **`status()` IS CALLED MORE THAN ONCE PER FRAME IN SOME PATHS.** The panel
+   * calls it, and so do menu items and dialogs through `bus.status()`. Draining
+   * on read means whoever calls first gets the notice -- which is fine, because
+   * they all funnel into the same `Panel.refresh`, but it is the reason this is
+   * documented as one-shot rather than as "the panel's to read".
+   *
+   * ## THE TRAP, WHICH HAS BEEN SPRUNG ONCE
+   *
+   * "They all funnel into `Panel.refresh`" is an invariant about the CALLERS,
+   * not a property of this field -- and the moment something calls `status()`
+   * for a reason unrelated to rendering the panel, it silently eats notices.
+   *
+   * That happened: the touch input binding read the active tool as
+   * `status().mouseMode`, from a callback running on every pointer event and
+   * once per frame. Perfectly reasonable-looking code, no type error, no
+   * warning -- and toasts stopped appearing on touch entirely, while remaining
+   * fine on the desktop where that binding does not exist.
+   *
+   * **So: if you want ONE field and you are not the panel, add a narrow getter
+   * to the Orchestrator and read that instead.** `activeMouseMode` is the one
+   * that came out of this. A narrow read cannot consume anything.
+   */
+  readonly notice: string;
+
+  /**
+   * Whether adopting a picked rule would change nothing, so clicks decline it.
+   *
+   * True at mutation scale 0 with an authored rule: every cohort obeys the same
+   * rule there, so a selection would reset the simulation and push an undo entry
+   * for a picture that did not move. The hint under the slider says so, because
+   * a click that is deliberately refused and a click that is broken look
+   * identical otherwise.
+   */
+  readonly selectionIsNoOp: boolean;
+
+  // --- history ---
+  readonly canUndo: boolean;
+  readonly canRedo: boolean;
+  readonly undoLabel: string;
+  /**
+   * What redo would re-apply, for menu text. Empty when nothing would.
+   *
+   * **NOT the mirror of `undoLabel`** -- see `History.redoLabel`, which reads
+   * one step further along the timeline than its counterpart. The two differ by
+   * a single index, so a reader who assumes symmetry here gets a menu row that
+   * names the step redo is moving AWAY from and looks almost right.
+   */
+  readonly redoLabel: string;
+  readonly historyDepth: number;
+  readonly historyCursor: number;
+
+  /**
+   * The last clicked entity, or `null` when nothing has been selected.
+   *
+   * There is deliberately NO `hovered` counterpart. One existed on the desktop,
+   * was permanently MISS because nothing ever wrote it, and showed as an
+   * always-empty debug row. Reinstating it would mean picking every frame,
+   * which is precisely the per-frame cost the on-demand design avoids
+   * (`orchestrator.py:158-165`).
+   */
+  readonly selected: PickResult | null;
+
+  // --- project / configs ---
+  /**
+   * Every config the app can load, grouped into menu categories: the shipped
+   * presets from the build-time manifest, plus the user's IndexedDB saves under
+   * "Custom". Core first, then alphabetical.
+   *
+   * The SHAPE predates the storage behind it -- it was written as
+   * `category -> names` in Step 7 precisely so that swapping a generated list
+   * for real storage would not touch this interface, the panel, or `status()`.
+   */
+  readonly configCategories: Readonly<Record<string, readonly string[]>>;
+  readonly projectName: string;
+  readonly selectedConfig: number;
+  readonly configCount: number;
+  readonly checkpoints: readonly CheckpointView[];
+  /** The morph timeline, for the Morph panel. Cheap: names and numbers only. */
+  readonly morph: MorphView;
+  /** Auto-evolve state, for the Evolve tab. */
+  readonly evolve: EvolveView;
+  /**
+   * Whether the project has a storage origin to revert to.
+   *
+   * False until something is loaded or saved -- there is nothing to revert TO
+   * before that, which is exactly why Step 8 left the desktop's Ctrl+R unbound.
+   */
+  readonly canRevert: boolean;
+  /**
+   * Whether saving is possible at all.
+   *
+   * False when the browser denied IndexedDB (private browsing, blocked storage).
+   * Shipped presets still load in that state, so the app works; only saving does
+   * not. Surfaced so the UI can say so BEFORE a user types a name.
+   */
+  readonly canSave: boolean;
+
+  // --- transient messages ---
+  readonly saveError: string;
+  /**
+   * In-flight storage work, or `''` when idle.
+   *
+   * Storage is async and `dispatch` returns void, so this is how a load or a
+   * save that has not landed yet reports itself. The panel renders it beside
+   * `saveError`, which it already reads every frame.
+   */
+  readonly configBusy: string;
+
+  /**
+   * The three settings sources, as plain records the panel reads by field name.
+   *
+   * SNAPSHOTS, NOT REFERENCES: the UI never holds live simulation objects. The
+   * desktop builds these only when a window that reads them is open, because
+   * `asdict` on a `SimulationConfig` deep-copies its 80-float rule tuple every
+   * frame (`orchestrator.py:590-604`). The port keeps that optimization for the
+   * same reason -- see `Orchestrator.settingsSources`.
+   */
+  readonly editConfig: Readonly<Record<string, number | boolean>>;
+  readonly editWorld: Readonly<Record<string, number | boolean>>;
+  readonly editPrefs: Readonly<Record<string, number | boolean>>;
+
+  /**
+   * The three per-panel Advanced tiers.
+   *
+   * **Carried separately from `editPrefs`, even though they are preferences.**
+   * That payload is EMPTY whenever no panel is open, which is a deliberate
+   * optimization (`settingsSources`) and correct for the values a control
+   * binds to -- nothing reads them while the panel is shut. These are
+   * different: they decide which controls the panel BUILDS, and the panel
+   * builds itself before `panelOpen` has been set. Reading them from the
+   * payload would construct both panels in Basic on first run regardless of
+   * what was saved, and nothing would correct it until the next rebuild.
+   *
+   * Three named booleans rather than a record, so a typo is a compile error --
+   * the same reasoning as `ViewPrefField`.
+   */
+  readonly advancedProject: boolean;
+  readonly advancedPreferences: boolean;
+  readonly advancedDrawing: boolean;
+}
+
+/**
+ * What a UI needs from the Orchestrator. The whole boundary, in three methods.
+ *
+ * A UI holds one of these and nothing else -- no `ParticleSystem`, no `Camera`,
+ * no `Project`. That is invariant 10 expressed as a type rather than as a
+ * convention, and it is what made Step 10's real interface very nearly a swap of
+ * the implementation behind `ui/thinPanel.ts`.
+ *
+ * ## What Step 10 DID change here, and why
+ *
+ * This interface did not change. Two `Command` payloads did, and both were
+ * type-narrowing rather than new capability -- no handler gained work, and
+ * nothing crossed the boundary that was not already crossing it:
+ *
+ *   - **`editDrawPref.field`: `string` -> `DrawPrefField`.** It was the one
+ *     payload the compiler could not check, which is the failure this file's
+ *     header says the boundary exists to eliminate.
+ *   - **The three preview commands gained a `surface` token.** One shared
+ *     snapshot slot cannot serve two simultaneous hover-browsers; see
+ *     `PreviewSurface` for the bug that makes concrete.
+ *
+ * The alternative to the second was the UI holding two `Project` snapshots
+ * itself, which would put simulation state in `ui/` -- a far worse breach of
+ * invariant 10 than a token that is a pair of string literals.
+ */
+export interface CommandBus {
+  /** Issue a command. Synchronous, like the desktop's dict dispatch. */
+  dispatch(command: Command): void;
+  /** This frame's status. Rebuilt each frame; never held across frames. */
+  status(): Status;
+  /**
+   * The live project as a v8 document, on demand. For the share link.
+   *
+   * A THIRD KIND OF THING, and the two it is not are both instructive:
+   *
+   *   - **Not a `Status` field.** `Status` is rebuilt EVERY FRAME, and turning
+   *     the project into a document means copying an 80-float rule per config
+   *     into fresh JSON. `settingsSources()` already goes to some trouble to
+   *     skip exactly this class of work when no panel is reading it; adding an
+   *     unconditional serialization beside it -- for a value read once per
+   *     keystroke -- would undo that for nothing.
+   *   - **Not a `Command`.** A command that copied to the clipboard would put
+   *     `navigator.clipboard` inside the Orchestrator, which today contains no
+   *     DOM or Web API call of any kind. `toggleUi` is a `LocalAction` rather
+   *     than a command for the same reason; rule 10 cuts both ways.
+   *
+   * So it is a PULL, like `status()`, of a value too expensive to push. The UI
+   * turns it into a URL and writes the clipboard. The Orchestrator hands over a
+   * document and never learns that a clipboard exists.
+   *
+   * `unknown` rather than a document type, because `persistence.ts` owns what
+   * these bytes mean and this is only the thing that carries them.
+   */
+  projectDocument(): unknown;
+
+  /**
+   * The live editor preferences.
+   *
+   * A PULL, like `projectDocument`, and for a related reason: `editPrefs` on
+   * `Status` is EMPTY whenever no panel is open (`settingsSources`'s
+   * optimization), so it cannot answer a question asked from a menu row or a
+   * hotkey. The one caller is the share link, which reads the current world
+   * size and brightness at the moment a link is COPIED -- see `buildLinkQuery`
+   * on why that must be copy time rather than tick time.
+   *
+   * A GETTER rather than a method, matching the Orchestrator's existing
+   * `preferences` accessor -- it is the frozen object that class already holds,
+   * so reading it costs nothing and it cannot be written through.
+   */
+  readonly preferences: Preferences;
+
+  /**
+   * Every user save, as the documents they are stored as. For folder export.
+   *
+   * A PULL for `projectDocument`'s reasons and one of its own. It is not a
+   * `Status` field because `Status` is rebuilt every frame and this copies the
+   * whole save library; it is not a `Command` because the folder picker and the
+   * download are Web APIs, which invariant 10 keeps out of the Orchestrator.
+   *
+   * The documents are handed over UNPARSED, exactly as stored. Export is a byte
+   * copy -- see `saveTransfer.ts` -- so anything that parsed and re-serialized
+   * here would make this a second writer of the format alongside `toDocument`.
+   *
+   * Async because the store's cache is authoritative only just after a write;
+   * this re-reads so an export cannot miss a save made moments earlier.
+   */
+  savedDocuments(): Promise<readonly { readonly name: string; readonly document: unknown }[]>;
+
+  /**
+   * The names already taken in `Custom`, for import's collision check.
+   *
+   * Separate from `savedDocuments` so the import path does not have to pull
+   * every stored document across the boundary to read their names -- import
+   * cares only about which names are free.
+   */
+  savedNames(): Promise<readonly string[]>;
+
+  /**
+   * Write imported saves into storage, returning how many landed.
+   *
+   * The inverse pull. Collision and validation decisions are already made by
+   * `planImport` before anything reaches here: this only writes, and the caller
+   * has already established that each name is free and each document parses.
+   *
+   * NOT a `saveConfig` per file, deliberately. That command renames the live
+   * project and moves `configOrigin` to what it just wrote (`saveConfig`), which
+   * is right when the user saves what they are looking at and wrong here --
+   * importing thirty files would leave the app claiming to be the last one,
+   * having adopted none of them. An import adds to the library; it does not
+   * change what is open.
+   */
+  importSaves(
+    saves: readonly { readonly name: string; readonly document: unknown }[],
+  ): Promise<number>;
+}

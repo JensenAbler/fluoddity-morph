@@ -1,9 +1,48 @@
+# Dependencies
 node_modules/
-.venv/
-__pycache__/
-*.pyc
+
+# Build output
+dist/
+build/
+.vite/
+*.tsbuildinfo
+
+# Env
 .env
 .env.*
 !.env.example
-coverage/
-dist/
+
+# Local preset working state. `tools/syncConfigs.ts` skips this directory by
+# name, so nothing in it is ever shipped -- it is scratch presets and the old
+# desktop app's user saves. The browser's equivalent is IndexedDB.
+configs/custom/
+
+# `tools/qrSurvival.mjs --emit` output. Regenerable in seconds, and it is
+# megabytes of near-identical 1080p images -- the kind of thing that is only
+# ever committed by accident.
+qr-samples/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Leftovers from the retired Python app (see the README on reading its
+# citations). Kept so an old venv or stale working tree does not show up as
+# untracked noise; droppable once no checkout has them.
+Scratch.venv/
+*.venv/
+venv/
+__pycache__/
+*.py[cod]
+preferences.json
+preferences.config
+imgui.ini

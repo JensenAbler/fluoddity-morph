@@ -1,0 +1,340 @@
+/**
+ * The two-stage selection: click to aim, click again to commit.
+ *
+ * WHY THIS TEST EXISTS. This module decides whether a click changes the project,
+ * and it is the only thing standing between "you always see what you are about
+ * to select" and two much worse behaviours: a first click that silently adopts a
+ * rule the user was only pointing at, or a second click that refuses to commit
+ * and leaves the feature feeling broken. Both are user-visible and neither
+ * raises anything, so every transition of the three-outcome rule is pinned here.
+ *
+ * No GPU: this is the decision, which is where those mistakes would live.
+ */
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+import {
+  CohortHighlight,
+  NO_COHORT,
+  type PickSample,
+  wrapCohort,
+} from './cohortHighlight.ts';
+
+/** A hit on `cohort`. The index only has to be non-negative to count as one. */
+function hit(cohort: number, index = 7): PickSample {
+  return { index, cohort };
+}
+
+/** A miss. `cohort` is set to a real-looking value on purpose: nothing may read
+ *  it once the index says miss. */
+const MISS: PickSample = { index: -1, cohort: 3 };
+
+// ---------------------------------------------------------------------------
+// The three outcomes
+// ---------------------------------------------------------------------------
+
+test('the first click on a cohort aims, it does not commit', () => {
+  // THE WHOLE POINT OF THE FEATURE. If this ever returned 'commit', a single
+  // click would adopt a rule the user was only pointing at -- which is exactly
+  // the behaviour the two-stage design replaced.
+  const h = new CohortHighlight();
+  assert.equal(h.apply(hit(4)), 'highlight');
+  assert.equal(h.cohort, 4);
+  assert.equal(h.isHighlighted, true);
+});
+
+test('a second click inside the lit cohort commits', () => {
+  const h = new CohortHighlight();
+  h.apply(hit(4));
+  assert.equal(h.apply(hit(4)), 'commit');
+});
+
+test('a click on a DIFFERENT cohort re-aims rather than committing', () => {
+  const h = new CohortHighlight();
+  h.apply(hit(4));
+  assert.equal(h.apply(hit(5)), 'highlight');
+  assert.equal(h.cohort, 5, 'the new cohort replaces the old one');
+});
+
+test('a miss unhighlights', () => {
+  const h = new CohortHighlight();
+  h.apply(hit(4));
+  assert.equal(h.apply(MISS), 'unhighlight');
+  assert.equal(h.cohort, NO_COHORT);
+});
+
+test('a miss with nothing lit is still an unhighlight, and harmless', () => {
+  // Clicking empty space with no aim in progress must not commit or throw --
+  // it is simply a click that does nothing.
+  const h = new CohortHighlight();
+  assert.equal(h.apply(MISS), 'unhighlight');
+  assert.equal(h.cohort, NO_COHORT);
+});
+
+test('a miss can never be mistaken for the unlit sentinel', () => {
+  // THE COLLISION THIS GUARDS. `pick.ts` gives a real MISS `cohort: -1`, which
+  // is the SAME NUMBER as `NO_COHORT` -- deliberately, since both mean "no
+  // cohort". That makes `sample.cohort === this.highlighted` true for a miss
+  // arriving while nothing is lit, so on the cohort test alone a miss would read
+  // as a commit and adopt a rule from a click that hit nothing.
+  //
+  // Two things prevent it: the miss test runs first, and `classify` also
+  // requires `isHighlighted`. Either alone suffices today, so this pins the
+  // OUTCOME rather than the implementation -- it must stay green however those
+  // two are arranged, and red if both go.
+  //
+  // The sample is built with the colliding value explicitly, rather than reusing
+  // the fixture at the top of this file, because the collision is the whole
+  // point of the test.
+  const missAtSentinel: PickSample = { index: -1, cohort: NO_COHORT };
+
+  const cold = new CohortHighlight();
+  assert.equal(cold.classify(missAtSentinel), 'unhighlight', 'a miss on a cold state');
+  assert.equal(cold.apply(missAtSentinel), 'unhighlight');
+
+  // And after a commit, which returns the state to unlit by that same sentinel.
+  const used = new CohortHighlight();
+  used.apply(hit(4));
+  used.apply(hit(4));
+  assert.equal(used.classify(missAtSentinel), 'unhighlight', 'a miss after a commit');
+  assert.equal(used.apply(missAtSentinel), 'unhighlight');
+});
+
+// ---------------------------------------------------------------------------
+// The commit clears
+// ---------------------------------------------------------------------------
+
+test('committing puts the highlight out', () => {
+  // Adoption changes what every particle is chasing, so the lit cohort no longer
+  // names what it did. Left lit, the field would stay dimmed against a
+  // historical answer AND the very next click inside it would commit again --
+  // a second rule change the user never aimed.
+  const h = new CohortHighlight();
+  h.apply(hit(4));
+  h.apply(hit(4));
+  assert.equal(h.cohort, NO_COHORT);
+  assert.equal(h.isHighlighted, false);
+});
+
+test('the click after a commit aims afresh', () => {
+  const h = new CohortHighlight();
+  h.apply(hit(4));
+  h.apply(hit(4));
+  // Same cohort, but nothing is lit now -- so this aims rather than committing.
+  assert.equal(h.apply(hit(4)), 'highlight');
+});
+
+test('three clicks on one cohort are: aim, commit, aim', () => {
+  // The full cycle in one place, because the alternating property is the thing a
+  // user actually experiences and it is easy to break by one state assignment.
+  const h = new CohortHighlight();
+  assert.deepEqual(
+    [h.apply(hit(4)), h.apply(hit(4)), h.apply(hit(4))],
+    ['highlight', 'commit', 'highlight'],
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Cohort 0
+// ---------------------------------------------------------------------------
+
+test('cohort 0 aims and commits like any other', () => {
+  // A regression guard with teeth: 0 is falsy, so any `if (cohort)` in this path
+  // makes the first cohort the one that can never be selected -- and it is the
+  // cohort a user is most likely to click first.
+  const h = new CohortHighlight();
+  assert.equal(h.apply(hit(0)), 'highlight');
+  assert.equal(h.cohort, 0);
+  assert.equal(h.isHighlighted, true, 'cohort 0 must count as highlighted');
+  assert.equal(h.apply(hit(0)), 'commit');
+});
+
+// ---------------------------------------------------------------------------
+// Any member of the cohort confirms
+// ---------------------------------------------------------------------------
+
+test('the confirming click may be a DIFFERENT particle of the same cohort', () => {
+  // THE AFFORDANCE. A cohort is scattered across the screen, and after the first
+  // click every one of its members is dimmed-out-of-dimming and therefore a
+  // valid confirm target. Testing entity identity instead of cohort membership
+  // would mean hunting for the exact pixel you clicked before.
+  const h = new CohortHighlight();
+  h.apply(hit(4, 100));
+  assert.equal(h.apply(hit(4, 20_000)), 'commit');
+});
+
+// ---------------------------------------------------------------------------
+// classify does not mutate
+// ---------------------------------------------------------------------------
+
+test('classify answers without changing anything', () => {
+  // The caller branches on the outcome before committing to it, so asking must
+  // be free. If classify mutated, merely inspecting a pick would consume the
+  // aim -- and the commit that followed would find nothing lit.
+  const h = new CohortHighlight();
+  h.apply(hit(4));
+
+  assert.equal(h.classify(hit(4)), 'commit');
+  assert.equal(h.classify(hit(4)), 'commit', 'asking twice must give one answer');
+  assert.equal(h.cohort, 4, 'classify must not disturb the lit cohort');
+
+  assert.equal(h.classify(MISS), 'unhighlight');
+  assert.equal(h.cohort, 4, 'classifying a miss must not clear anything');
+});
+
+test('classify and apply agree', () => {
+  // apply is defined in terms of classify, and this pins that they cannot drift
+  // -- a divergence would mean the project changed for a reason the highlight
+  // did not record, or vice versa.
+  for (const sample of [hit(4), hit(9), MISS]) {
+    const a = new CohortHighlight();
+    const b = new CohortHighlight();
+    a.apply(hit(4));
+    b.apply(hit(4));
+    assert.equal(a.classify(sample), b.apply(sample));
+  }
+});
+
+// ---------------------------------------------------------------------------
+// clear
+// ---------------------------------------------------------------------------
+
+test('clear puts the highlight out', () => {
+  // For the paths that change the rule from somewhere else -- the rerolls,
+  // undo/redo -- and for leaving the Select tool or rebuilding the system.
+  const h = new CohortHighlight();
+  h.apply(hit(4));
+  h.clear();
+  assert.equal(h.cohort, NO_COHORT);
+  assert.equal(h.isHighlighted, false);
+  // ...and the next click aims rather than committing, which is the point: a
+  // cleared aim must not still be armed.
+  assert.equal(h.apply(hit(4)), 'highlight');
+});
+
+// ---------------------------------------------------------------------------
+// The sentinel
+// ---------------------------------------------------------------------------
+
+test('NO_COHORT is negative, so it cannot collide with a real cohort', () => {
+  // `get_cohort` is a non-negative ramp and the shader floors it, so every real
+  // cohort is >= 0. The shader reads this same sentinel out of a float uniform
+  // lane (`highlighted_cohort() >= 0.0`), which is only sound while this holds.
+  assert.ok(NO_COHORT < 0);
+});
+
+// ---------------------------------------------------------------------------
+// wrapCohort -- the stepper's arithmetic
+// ---------------------------------------------------------------------------
+
+test('wrapCohort wraps UPWARD past the last cohort', () => {
+  assert.equal(wrapCohort(8, 8), 0);
+  assert.equal(wrapCohort(9, 8), 1);
+  assert.equal(wrapCohort(16, 8), 0, 'more than one lap still lands in range');
+});
+
+test('wrapCohort wraps DOWNWARD past zero, rather than going negative', () => {
+  // THE BUG THIS FUNCTION EXISTS FOR. JavaScript's `%` keeps the sign of the
+  // dividend, so a bare `cohort % count` gives -1 here -- which is NO_COHORT, so
+  // clicking the down arrow on cohort 0 would put the highlight OUT instead of
+  // wrapping to the last cohort. It reads as a broken button, and the correct
+  // and incorrect versions differ by a few characters.
+  assert.equal(wrapCohort(-1, 8), 7);
+  assert.equal(wrapCohort(-9, 8), 7, 'more than one lap downward');
+  assert.equal(wrapCohort(-8, 8), 0, 'exactly one lap downward is 0, not -0');
+  // `-0` is `=== 0` in JS, so assert the sign explicitly: it would render as
+  // "-0" in the stepper's text field.
+  assert.ok(!Object.is(wrapCohort(-8, 8), -0), 'must not produce negative zero');
+});
+
+test('wrapCohort leaves an in-range cohort alone', () => {
+  for (const cohort of [0, 1, 7]) {
+    assert.equal(wrapCohort(cohort, 8), cohort);
+  }
+});
+
+test('wrapCohort collapses to 0 with a single cohort', () => {
+  // Highlighting is disabled at one cohort, so this should be unreachable --
+  // but "unreachable" is not "returns something sensible", and a stepper that
+  // could produce anything but 0 here would light a cohort that does not exist.
+  for (const cohort of [-1, 0, 1, 99]) {
+    assert.equal(wrapCohort(cohort, 1), 0);
+  }
+});
+
+test('wrapCohort refuses a non-positive count or a non-finite cohort', () => {
+  // No cohort to land on, and no answer but "none". Returning 0 would light
+  // cohort 0 of a population that has none.
+  assert.equal(wrapCohort(3, 0), NO_COHORT);
+  assert.equal(wrapCohort(3, -4), NO_COHORT);
+  // A field the user typed garbage into reaches this as NaN.
+  assert.equal(wrapCohort(Number.NaN, 8), NO_COHORT);
+  assert.equal(wrapCohort(Number.POSITIVE_INFINITY, 8), NO_COHORT);
+});
+
+// ---------------------------------------------------------------------------
+// The touch commit rule
+//
+// WHY THESE EXIST. On a mouse, "click again inside the lit cohort" is a good
+// confirmation. On a fingertip -- ~10mm against particles a few pixels wide --
+// landing on a member of the cohort already lit is a NEAR MISS, and under the
+// desktop rule a near miss silently adopts a rule, resets the simulation and
+// pushes an undo entry. The user asked to look at another cohort and got a
+// committed edit.
+//
+// The failure is invisible from a desktop and expensive on a phone, which is
+// exactly the shape of thing that needs pinning here rather than by hand.
+// ---------------------------------------------------------------------------
+
+test('with commits disabled, a pick inside the lit cohort RE-AIMS instead', () => {
+  // THE ASSERTION THIS FLAG EXISTS FOR.
+  const h = new CohortHighlight(false);
+  h.apply({ index: 5, cohort: 3 });
+  assert.equal(h.cohort, 3, 'the first pick still aims');
+
+  assert.equal(
+    h.apply({ index: 9, cohort: 3 }),
+    'highlight',
+    'a second pick in the same cohort must not commit on touch',
+  );
+  assert.equal(h.cohort, 3, 'and the cohort stays lit, ready for the button');
+});
+
+test('the default still commits, so the desktop is untouched', () => {
+  // The flag defaults to true and every existing call site omits it. If this
+  // ever fails, the touch rule has leaked into the mouse path.
+  const h = new CohortHighlight();
+  h.apply({ index: 5, cohort: 3 });
+  assert.equal(h.apply({ index: 9, cohort: 3 }), 'commit');
+  assert.equal(h.cohort, NO_COHORT, 'a commit puts the highlight out');
+});
+
+test('with commits disabled, aiming at a DIFFERENT cohort still works', () => {
+  // The flag must remove only the commit. If it disabled re-aiming too, the
+  // highlight would stick on the first cohort tapped and the stepper would be
+  // the only way to move it.
+  const h = new CohortHighlight(false);
+  h.apply({ index: 5, cohort: 3 });
+  assert.equal(h.apply({ index: 7, cohort: 6 }), 'highlight');
+  assert.equal(h.cohort, 6);
+});
+
+test('with commits disabled, a MISS still clears the highlight', () => {
+  // Tapping empty space is how an aim is cancelled, and that is unrelated to
+  // committing -- withholding it would leave a cohort lit with no way to put it
+  // out but the context button.
+  const h = new CohortHighlight(false);
+  h.apply({ index: 5, cohort: 3 });
+  assert.equal(h.apply({ index: -1, cohort: 0 }), 'unhighlight');
+  assert.equal(h.cohort, NO_COHORT);
+});
+
+test('classify agrees with apply about the withheld commit', () => {
+  // The Orchestrator calls `classify` BEFORE `apply` to decide whether a commit
+  // is refused (the mutation-scale-zero path). The two disagreeing would mean a
+  // pick classified one way and applied another.
+  const h = new CohortHighlight(false);
+  h.apply({ index: 5, cohort: 3 });
+  assert.equal(h.classify({ index: 9, cohort: 3 }), 'highlight');
+});

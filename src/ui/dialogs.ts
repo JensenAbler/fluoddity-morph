@@ -1,0 +1,582 @@
+/**
+ * The save dialog and the two confirmations: delete a config, reset preferences.
+ *
+ * Native `<dialog showModal()>`, which gives Escape-to-cancel, focus trapping
+ * and an inert backdrop for free -- all three of which the desktop's imgui modal
+ * has to arrange by hand (`config_menu.py:377-410` wires Escape explicitly).
+ *
+ * ## Two error channels, and they mean different things
+ *
+ * `config_menu.py:453-462` is emphatic about this and it ports unchanged:
+ *
+ *   - **local validation** -- the UI DECLINING TO DISPATCH at all ("Enter a
+ *     filename."). The Orchestrator never hears about it, because nothing was
+ *     ever asked of it.
+ *   - **`status.saveError`** -- the Orchestrator reporting an ATTEMPTED save
+ *     that failed (a name that sanitizes to nothing, storage denied).
+ *
+ * The second is read from status **every frame**, never once after dispatch.
+ * That is not defensive coding: storage is genuinely async here, so reading it
+ * on the line after `send` would read the previous frame's value and close the
+ * dialog on a save that had not landed yet.
+ *
+ * ## The dialogs live outside the panel container
+ *
+ * `setHidden` toggles the panel's `display`, and a modal that has taken input
+ * must not vanish with it -- that would leave the app apparently frozen with no
+ * way to answer the question. The desktop keeps its dialogs outside the
+ * `gui_hidden` check for the same reason (`ui.py:274-289`).
+ */
+
+import type { Command, Status } from '../orchestrator/commands.ts';
+import type { SettingChange } from '../config/urlOptions.ts';
+import { localHotkeyLabel } from './hotkeys.ts';
+
+export interface DialogOptions {
+  readonly send: (command: Command) => void;
+  /**
+   * Copy the live project as a share URL.
+   *
+   * A CALLBACK, not a `Command`, because the clipboard is the UI's and not the
+   * Orchestrator's -- see `CommandBus.projectDocument`. It also keeps `window`
+   * out of this file, which is what lets these dialogs stay readable as pure DOM
+   * construction with one bus at the edge.
+   */
+  readonly onCopyShareLink: () => void;
+  /**
+   * Discard every archived state, once the user has confirmed.
+   *
+   * A CALLBACK RATHER THAN A COMMAND, for `onCopyShareLink`'s reason: the work
+   * is an IndexedDB transaction, and `CommandBus` is deliberately a value-in,
+   * value-out seam that admits no Web APIs. The host wires this to the
+   * Orchestrator, which owns the database.
+   */
+  readonly onClearArchive: () => void;
+}
+
+export class Dialogs {
+  private readonly send: (command: Command) => void;
+  private readonly onCopyShareLink: () => void;
+  private readonly onClearArchive: () => void;
+
+  private readonly saveEl: HTMLDialogElement;
+  private readonly saveInput: HTMLInputElement;
+  private readonly saveError: HTMLElement;
+  /**
+   * The share-link outcome. SEPARATE from `saveError`, for two reasons.
+   *
+   * It is red, and a copied link is not an error -- but that alone would only
+   * be a styling complaint. The real one: `refresh()` rewrites
+   * `saveError.textContent` from status EVERY FRAME, so a message written there
+   * would survive exactly one frame and then vanish. This element is written
+   * only here and cleared only by `openSave`.
+   *
+   * It exists at all because the toast cannot help while this dialog is up: a
+   * native `<dialog showModal()>` renders in the browser's top layer, above
+   * every `z-index`, so a `document.body` toast sits behind the backdrop.
+   */
+  private readonly shareNote: HTMLElement;
+  /** PRE-DISPATCH validation only. See the file header. */
+  private validation = '';
+  /** True between clicking Save and the status reporting an outcome. */
+  private savePending = false;
+
+  private readonly deleteEl: HTMLDialogElement;
+  private readonly deleteText: HTMLElement;
+  private pendingDelete: { category: string; name: string } | null = null;
+
+  private readonly resetPrefsEl: HTMLDialogElement;
+
+  private readonly clearArchiveEl: HTMLDialogElement;
+
+  // --- the URL settings prompt ----------------------------------------------
+  //
+  // Built EMPTY and refilled on each opening, unlike the three above whose
+  // content is fixed at construction. The rows depend on what a link proposed
+  // and on what the user's settings were when it was opened, neither of which
+  // exists yet at construction time.
+  private readonly urlSettingsEl: HTMLDialogElement;
+  private readonly urlSettingsList: HTMLElement;
+  /**
+   * The rows currently on offer, paired with their checkboxes.
+   *
+   * Held so Apply can read the ticks back. Cleared on close so a dismissed
+   * dialog cannot apply anything on a later opening.
+   */
+  private urlSettingsRows: readonly {
+    readonly change: SettingChange;
+    readonly box: HTMLInputElement;
+  }[] = [];
+  /** Told which changes the user accepted. Null when nothing is pending. */
+  private urlSettingsResolve: ((accepted: readonly SettingChange[]) => void) | null =
+    null;
+
+  constructor(opts: DialogOptions) {
+    this.send = opts.send;
+    this.onCopyShareLink = opts.onCopyShareLink;
+    this.onClearArchive = opts.onClearArchive;
+
+    // --- save --------------------------------------------------------------
+    const save = dialog('fluoddity-save');
+    save.append(heading('Save Config'));
+
+    this.saveInput = document.createElement('input');
+    this.saveInput.type = 'text';
+    this.saveInput.placeholder = 'Filename';
+    this.saveInput.style.cssText = INPUT_CSS;
+    // Typing answers the validation complaint. It does NOT clear the
+    // Orchestrator's error -- only another save attempt can.
+    this.saveInput.addEventListener('input', () => {
+      this.validation = '';
+    });
+    this.saveInput.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') this.attemptSave();
+    });
+    save.append(this.saveInput);
+
+    const note = document.createElement('div');
+    note.textContent = 'saves to Custom';
+    note.style.cssText = 'opacity:0.5;font-size:10px;margin-top:6px;';
+    save.append(note);
+
+    this.saveError = document.createElement('div');
+    this.saveError.style.cssText =
+      'color:#ff6b6b;font-size:11px;margin-top:8px;min-height:14px;';
+    save.append(this.saveError);
+
+    this.shareNote = document.createElement('div');
+    this.shareNote.style.cssText =
+      'font-size:11px;margin-top:6px;min-height:14px;';
+    save.append(this.shareNote);
+
+    // LEFTMOST AND SECONDARY. `buttonRow` packs to the right, so the leftmost
+    // slot is the one furthest from the two buttons that dismiss the dialog --
+    // and this one dismisses nothing, which is worth signalling by position.
+    //
+    // Secondary because `primary` is what Enter visually promises, and Enter is
+    // already bound to Save in the filename field. Two blue buttons would make
+    // that promise ambiguous; the reset-preferences dialog above treats "which
+    // one is primary" as a real decision for the same reason.
+    //
+    // The key comes from the hotkey table rather than being typed here, so a
+    // rebind moves the label with it -- see `localHotkeyLabel`.
+    save.append(
+      buttonRow([
+        button(`Copy as URL (${localHotkeyLabel('copyShareLink')})`, () => {
+          this.onCopyShareLink();
+        }),
+        button('Save', () => this.attemptSave(), true),
+        button('Cancel', () => {
+          this.closeSave();
+        }),
+      ]),
+    );
+    this.saveEl = save;
+
+    // --- delete ------------------------------------------------------------
+    const del = dialog('fluoddity-delete');
+    del.append(heading('Delete Config?'));
+    this.deleteText = document.createElement('div');
+    this.deleteText.style.cssText = 'font-size:11px;opacity:0.75;';
+    del.append(this.deleteText);
+    del.append(
+      buttonRow([
+        button('Delete', () => {
+          if (this.pendingDelete !== null) {
+            this.send({ kind: 'deleteConfig', ...this.pendingDelete });
+          }
+          this.pendingDelete = null;
+          this.deleteEl.close();
+        }, true),
+        button('Cancel', () => {
+          this.pendingDelete = null;
+          this.deleteEl.close();
+        }),
+      ]),
+    );
+    this.deleteEl = del;
+
+    // --- reset preferences ---------------------------------------------------
+    //
+    // CONFIRMED BECAUSE IT CANNOT BE UNDONE. Preferences are deliberately
+    // outside history (see `resetPreferences` in `commands.ts`), so unlike every
+    // other menu item that changes state, there is no Undo to reach for. It also
+    // sits directly under Reset View, whose click is harmless -- one row apart
+    // from an action that discards every editor setting you have.
+    //
+    // SAYS WHAT IT DOES NOT TOUCH, not just what it does. The whole reason this
+    // is offerable is that saved configs live in IndexedDB and preferences in
+    // `localStorage`, and a user cannot be expected to know that -- without the
+    // second line, "reset" reads as though it might take the saved work with it.
+    const resetPrefs = dialog('fluoddity-reset-prefs');
+    resetPrefs.append(heading('Reset Editor Preferences?'));
+    const resetText = document.createElement('div');
+    resetText.style.cssText = 'font-size:11px;opacity:0.75;line-height:1.5;';
+    resetText.textContent =
+      'Brightness, world size, physics rate, bloom, brush and panel settings ' +
+      'all go back to their defaults. This cannot be undone.\n\n' +
+      'Your saved configs are not affected, and neither is the project you ' +
+      'currently have open.';
+    // Preserves the blank line between the two paragraphs above.
+    resetText.style.whiteSpace = 'pre-wrap';
+    resetPrefs.append(resetText);
+    resetPrefs.append(
+      buttonRow([
+        // **CANCEL IS THE PRIMARY**, inverting the save and delete dialogs. Those
+        // confirm something the user came here to do; this one guards a row they
+        // may have hit reaching for Reset View, so the default answer -- and the
+        // one Enter picks -- should be the harmless one.
+        button('Cancel', () => {
+          this.resetPrefsEl.close();
+        }, true),
+        button('Reset Preferences', () => {
+          this.send({ kind: 'resetPreferences' });
+          this.resetPrefsEl.close();
+        }),
+      ]),
+    );
+    this.resetPrefsEl = resetPrefs;
+
+    // --- clear the archive ---------------------------------------------------
+    //
+    // CONFIRMED FOR `resetPrefs`'s REASON AND MORE STRONGLY. That one discards
+    // settings a user can set again in a minute; this one discards a RECORD OF
+    // WORK THAT CANNOT BE REDONE -- the states are only reachable by having
+    // visited them, and re-visiting them means retracing an exploration whose
+    // whole value was that it was unrepeatable.
+    //
+    // SAYS WHAT IT DOES NOT TOUCH, exactly as the preferences dialog does, and
+    // the confusion it heads off is sharper here: the archive stores project
+    // STATES, so "clear every project state" reads as though it might take the
+    // saved configs -- or the project on screen -- with it. It takes neither.
+    const clearArchive = dialog('fluoddity-clear-archive');
+    clearArchive.append(heading('Clear the State Archive?'));
+    const clearText = document.createElement('div');
+    clearText.style.cssText = 'font-size:11px;opacity:0.75;line-height:1.5;';
+    clearText.textContent =
+      'Every project state Strong Logging has recorded is discarded, along ' +
+      'with the paths between them. This cannot be undone, and the states are ' +
+      'not recoverable by any other means.\n\n' +
+      'Your saved configs are not affected, and neither is the project you ' +
+      'currently have open. Download the archive first if you want to keep it.';
+    clearText.style.whiteSpace = 'pre-wrap';
+    clearArchive.append(clearText);
+    clearArchive.append(
+      buttonRow([
+        // CANCEL IS THE PRIMARY, for the reason it is in the preferences dialog:
+        // the harmless answer should be the one Enter picks.
+        button('Cancel', () => {
+          this.clearArchiveEl.close();
+        }, true),
+        button('Clear Archive', () => {
+          // Closed FIRST, then the work starts: the clear is async and the
+          // dialog has nothing to report: leaving it up during a database
+          // transaction would read as though it were waiting for something.
+          this.clearArchiveEl.close();
+          this.onClearArchive();
+        }),
+      ]),
+    );
+    this.clearArchiveEl = clearArchive;
+
+    // --- the URL settings prompt ---------------------------------------------
+    //
+    // **THIS IS A PERMISSION PROMPT, AND IT IS WORDED AS ONE.** The values come
+    // from a URL, which means from whoever wrote the link rather than from the
+    // person reading it. `preferences.ts` already refuses to let a loaded
+    // config change your brightness or canvas size; a query parameter must not
+    // be the back door around that rule, so the answer is to ask.
+    //
+    // EVERY BOX STARTS TICKED. The common case is a link someone sent on
+    // purpose, and making the user tick four boxes to accept what they already
+    // chose to open would be friction with no safety payoff -- the protection
+    // is in seeing the list and being able to refuse it, not in the default.
+    //
+    // CANCEL IS THE PRIMARY, following the reset-preferences dialog rather than
+    // save and delete: this prompt appears unbidden, in response to a link
+    // rather than a click, so the default answer should be the one that changes
+    // nothing. Enter picks it. The spec asks for Enter to act like Apply; see
+    // below, where Enter is bound to Apply explicitly and this button is merely
+    // the visual default.
+    const urlSettings = dialog('fluoddity-url-settings');
+    urlSettings.append(heading('Allow this project to modify these settings?'));
+
+    const urlIntro = document.createElement('div');
+    urlIntro.style.cssText =
+      'font-size:11px;opacity:0.75;line-height:1.5;margin-bottom:10px;';
+    urlIntro.textContent =
+      'The link you opened asks to change how your editor is set up. ' +
+      'Untick anything you would rather keep.';
+    urlSettings.append(urlIntro);
+
+    this.urlSettingsList = document.createElement('div');
+    this.urlSettingsList.style.cssText =
+      'display:flex;flex-direction:column;gap:6px;max-height:40vh;overflow-y:auto;';
+    urlSettings.append(this.urlSettingsList);
+
+    urlSettings.append(
+      buttonRow([
+        button('Cancel', () => {
+          this.closeUrlSettings([]);
+        }, true),
+        // "Apply", not "Yes": the heading is a question, but the button says
+        // what pressing it DOES -- which is the one thing a user scanning the
+        // two buttons needs, and which "Yes" leaves them to infer from a
+        // heading they may not have read.
+        button('Apply', () => {
+          this.acceptUrlSettings();
+        }),
+      ]),
+    );
+
+    // ENTER MEANS YES, which native `<dialog>` does not give for free -- it
+    // gives Escape-to-cancel only. Bound on the dialog rather than on a form so
+    // it fires wherever focus sits, including on a checkbox the user has just
+    // tabbed to. Space still toggles a focused box, because this only claims
+    // Enter.
+    urlSettings.addEventListener('keydown', (ev) => {
+      if (ev.key !== 'Enter') return;
+      ev.preventDefault();
+      this.acceptUrlSettings();
+    });
+    // Escape, and the backdrop, resolve as Cancel. Without this the promise
+    // would never settle and the caller would wait forever for an answer the
+    // user has already given.
+    urlSettings.addEventListener('cancel', () => {
+      this.closeUrlSettings([]);
+    });
+    this.urlSettingsEl = urlSettings;
+  }
+
+  // -- save -----------------------------------------------------------------
+
+  /** Whether the save dialog is up, so a caller can pick a visible surface. */
+  get saveDialogOpen(): boolean {
+    return this.saveEl.open;
+  }
+
+  /**
+   * Report a share-link copy inside the dialog.
+   *
+   * Green rather than red on success: this element carries both outcomes, and
+   * the colour is the only thing distinguishing them at a glance.
+   */
+  showShareNote(text: string, ok: boolean): void {
+    this.shareNote.textContent = text;
+    this.shareNote.style.color = ok ? '#8fd48f' : '#ff6b6b';
+  }
+
+  openSave(defaultName: string): void {
+    this.validation = '';
+    this.savePending = false;
+    // A copy from a previous opening would otherwise still be sitting there,
+    // claiming a link was just copied when it was not -- the same staleness the
+    // `clearSaveError` dispatch below exists to prevent.
+    this.shareNote.textContent = '';
+    // The Orchestrator's error outlives the dialog that produced it -- only a
+    // save attempt rewrites it -- so a previous failure would otherwise greet
+    // the user on a fresh dialog (`config_menu.py:416-423`).
+    this.send({ kind: 'clearSaveError' });
+    if (this.saveInput.value === '') this.saveInput.value = defaultName;
+    this.saveEl.showModal();
+    this.saveInput.select();
+  }
+
+  private attemptSave(): void {
+    const name = this.saveInput.value.trim();
+    if (name === '') {
+      this.validation = 'Enter a filename.';
+      return;
+    }
+    this.validation = '';
+    this.savePending = true;
+    this.send({ kind: 'saveConfig', name });
+  }
+
+  private closeSave(): void {
+    this.savePending = false;
+    this.saveEl.close();
+  }
+
+  // -- delete ---------------------------------------------------------------
+
+  openDelete(category: string, name: string): void {
+    this.pendingDelete = { category, name };
+    this.deleteText.textContent = `Delete "${name}" from ${category}? This cannot be undone.`;
+    this.deleteEl.showModal();
+  }
+
+  // -- reset preferences ------------------------------------------------------
+
+  /**
+   * Ask before discarding every editor preference.
+   *
+   * No pending state to hold, unlike `openDelete`: there is nothing to name, so
+   * the dialog's text is fixed at construction and the command carries nothing.
+   */
+  openResetPreferences(): void {
+    this.resetPrefsEl.showModal();
+  }
+
+  /**
+   * Ask before discarding every archived state.
+   *
+   * Nothing to hold and nothing to name, like `openResetPreferences`: the text is
+   * fixed at construction because what is destroyed does not depend on which
+   * states happen to be in there.
+   */
+  openClearArchive(): void {
+    this.clearArchiveEl.showModal();
+  }
+
+  // -- the URL settings prompt ------------------------------------------------
+
+  /**
+   * Ask whether a link may change these settings, resolving with the accepted
+   * subset.
+   *
+   * RESOLVES RATHER THAN DISPATCHING, because the caller has to do more than
+   * apply the list: a world-size change also triggers a recalibration, and that
+   * ordering belongs with the startup sequence in `main.ts` rather than buried
+   * in a dialog. An empty array means Cancel, Escape, or every box unticked --
+   * all three mean "change nothing", so they need no distinguishing.
+   *
+   * Never rejects. A prompt the user closed is an answer, not a failure.
+   */
+  openUrlSettings(changes: readonly SettingChange[]): Promise<readonly SettingChange[]> {
+    // Nothing to ask about. Resolving immediately rather than showing an empty
+    // dialog -- `describeChanges` already omits settings that match, so a link
+    // proposing only redundant values lands here and should be invisible.
+    if (changes.length === 0) return Promise.resolve([]);
+
+    this.urlSettingsList.replaceChildren();
+    this.urlSettingsRows = changes.map((change) => {
+      const row = document.createElement('label');
+      row.style.cssText =
+        'display:flex;align-items:center;gap:8px;cursor:pointer;font-size:11px;';
+
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = true;
+      box.style.cssText = 'cursor:pointer;margin:0;';
+      row.append(box);
+
+      // `textContent`, NEVER `innerHTML`. The label is built from
+      // `settingsSpec.ts` rather than from the URL, but the VALUES either side
+      // of the arrow are parsed from one -- and this is the one place they are
+      // rendered. See the header on `urlOptions.ts`.
+      const text = document.createElement('span');
+      text.textContent = `${change.label}: ${change.from} → ${change.to}`;
+      row.append(text);
+
+      this.urlSettingsList.append(row);
+      return { change, box };
+    });
+
+    this.urlSettingsEl.showModal();
+    return new Promise((resolve) => {
+      this.urlSettingsResolve = resolve;
+    });
+  }
+
+  /** Resolve with whatever is still ticked. */
+  private acceptUrlSettings(): void {
+    this.closeUrlSettings(
+      this.urlSettingsRows.filter((r) => r.box.checked).map((r) => r.change),
+    );
+  }
+
+  /**
+   * Close and settle, exactly once.
+   *
+   * The resolver is cleared BEFORE it is called and the rows are dropped with
+   * it, so the two paths that can both fire -- a Cancel click and the `cancel`
+   * event it triggers -- cannot resolve the same promise twice or leave a stale
+   * row list behind for the next opening.
+   */
+  private closeUrlSettings(accepted: readonly SettingChange[]): void {
+    const resolve = this.urlSettingsResolve;
+    this.urlSettingsResolve = null;
+    this.urlSettingsRows = [];
+    this.urlSettingsList.replaceChildren();
+    if (this.urlSettingsEl.open) this.urlSettingsEl.close();
+    resolve?.(accepted);
+  }
+
+  // -- per frame ------------------------------------------------------------
+
+  /**
+   * Read the outcome of an in-flight save.
+   *
+   * The dialog closes only once a save is actually reported clean, which under
+   * an async bus means it may stay up one extra frame. That is correct
+   * behaviour rather than a race: closing on dispatch would close it on a save
+   * that then failed.
+   */
+  refresh(status: Status): void {
+    this.saveError.textContent = this.validation || status.saveError;
+
+    if (!this.savePending) return;
+    // Still working: `configBusy` is non-empty while the write is in flight.
+    if (status.configBusy !== '') return;
+    if (status.saveError === '') this.closeSave();
+    else this.savePending = false;
+  }
+
+  dispose(): void {
+    this.saveEl.remove();
+    this.deleteEl.remove();
+    this.resetPrefsEl.remove();
+    this.clearArchiveEl.remove();
+    // Settled first: a caller awaiting an answer would otherwise hang forever
+    // on a disposed dialog. Disposal changes nothing, so it answers as Cancel.
+    this.closeUrlSettings([]);
+    this.urlSettingsEl.remove();
+  }
+}
+
+// -- construction helpers ---------------------------------------------------
+
+const INPUT_CSS =
+  'width:100%;box-sizing:border-box;padding:6px 8px;margin-top:4px;' +
+  'background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.18);' +
+  'border-radius:3px;color:#e8e8ea;font:12px system-ui,sans-serif;';
+
+function dialog(id: string): HTMLDialogElement {
+  const el = document.createElement('dialog');
+  el.id = id;
+  el.style.cssText =
+    'min-width:300px;padding:16px;border:1px solid rgba(255,255,255,0.15);' +
+    'border-radius:6px;background:rgba(28,28,30,0.98);color:#e8e8ea;' +
+    'font:12px system-ui,sans-serif;';
+  // Outside the panel container, so `setHidden` cannot take a modal off screen.
+  document.body.append(el);
+  return el;
+}
+
+function heading(text: string): HTMLElement {
+  const el = document.createElement('div');
+  el.textContent = text;
+  el.style.cssText = 'font-weight:600;margin-bottom:10px;';
+  return el;
+}
+
+function button(label: string, onClick: () => void, primary = false): HTMLElement {
+  const el = document.createElement('button');
+  el.textContent = label;
+  el.style.cssText =
+    'padding:5px 14px;border-radius:3px;cursor:pointer;' +
+    'font:11px system-ui,sans-serif;' +
+    (primary
+      ? 'background:#2a6cb0;border:1px solid #3a7cc0;color:#fff;'
+      : 'background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#e8e8ea;');
+  el.addEventListener('click', onClick);
+  return el;
+}
+
+function buttonRow(children: readonly HTMLElement[]): HTMLElement {
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:14px;';
+  row.append(...children);
+  return row;
+}

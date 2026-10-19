@@ -1,0 +1,1062 @@
+<!doctype html>
+<html lang="en" data-theme="darkroom">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <!-- Relative, matching `base: './'` in vite.config.ts, so this page works at
+         a subpath, at a custom domain and from `npm run preview` alike. -->
+    <link rel="icon" href="./favicon.ico" sizes="any" />
+    <title>Fluoddity Sand</title>
+    <style>
+      /* ==================================================================
+         LAYOUT TOKENS
+
+         From the layout bench (docs/comps/sandLayout.html), as recorded in
+         docs/comps/ui_controls.txt. Unitless CSS px at UI scale 1: every
+         size below is `N * var(--u)`, and `sandUi.relayout` raises --ui on
+         big screens so the canvas takes at most 75% of the window.
+
+         `sandUi.ts` reads several of these back (swatch diameter, bar
+         padding, tool box height), so this block is the one place they are
+         stated.
+         ================================================================== */
+      :root {
+        --ui-base: 1.15;
+        --ui: var(--ui-base);
+        --pad: 5;
+        --corner: 5;
+        --sw-d: 44;
+        --sw-gap: 5;
+        --sw-name-fs: 9;
+        --bar-pad: 0;
+        --side-w: 150;
+        --sec-pad: 10;
+        --btn-gap: 4;
+        --label-fs: 9;
+        --tool-h: 44;
+        --tool-cols: 2;
+        --size-h: 44;
+        --sim-d: 44;
+        --reset-h: 44;
+        --box-h: 170;
+        --band-tool-cols: 3;
+        --size-w: 37;
+        --wbtn-h: 30;
+        --wsw-d: 56;
+        --wsw-gap: 9;
+        --wsw-fs: 10;
+        --wl-bg: 0.5;
+      }
+
+      /* ==================================================================
+         LOOKS
+
+         One block of colour tokens each -- see `theme.ts`. Components style
+         themselves THROUGH these names and never name a colour directly.
+         DARKROOM is the base: it is the default and the look the bench was
+         tuned in.
+         ================================================================== */
+      :root {
+        color-scheme: dark;
+        --bg: #0b0c0f;
+        --chrome: #16181d;
+        --chrome-2: #1d2027;
+        --edge: #2a2e37;
+        --edge-soft: #21242b;
+        --ink: #d6d9e0;
+        --ink-dim: #767c8a;
+        --accent: #e8a33d;
+        --accent-ink: #1a1305;
+        --sel-bg: #2a2118;
+        --sel-ink: #f0c078;
+        --sel-edge: #e8a33d;
+        --radius: 5px;
+        --rmul: 1;
+        --border: 1px;
+        --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+        --font-label: var(--font);
+        --label-spacing: 0.06em;
+        --label-transform: uppercase;
+        --canvas-edge: #2a2e37;
+        --ic-line: #e8a33d;
+        --ic-ink: #f0c078;
+        --ic-bg: rgba(11, 12, 15, 0.86);
+      }
+
+      /* SYSTEM 7: 1-bit, hard edges, inverted selection. */
+      :root[data-theme='system7'] {
+        --bg: #5f5f5f;
+        --chrome: #ffffff;
+        --chrome-2: #ffffff;
+        --edge: #000000;
+        --edge-soft: #000000;
+        --ink: #000000;
+        --ink-dim: #6b6b6b;
+        --accent: #000000;
+        --accent-ink: #ffffff;
+        --sel-bg: #000000;
+        --sel-ink: #ffffff;
+        --sel-edge: #000000;
+        --radius: 0px;
+        --rmul: 0;
+        --border: 2px;
+        --font: ui-monospace, "Chicago", "Geneva", Monaco, monospace;
+        --label-spacing: 0.02em;
+        --label-transform: none;
+        --canvas-edge: #000000;
+        --ic-line: #ffffff;
+        --ic-ink: #ffffff;
+        --ic-bg: rgba(0, 0, 0, 0.72);
+      }
+
+      /* BLUEPRINT: indigo drafting paper, cyan hairlines, monospace. */
+      :root[data-theme='blueprint'] {
+        --bg: #0a1020;
+        --chrome: #121a2e;
+        --chrome-2: #18223a;
+        --edge: #2d4468;
+        --edge-soft: #223451;
+        --ink: #c4d6ec;
+        --ink-dim: #6d86a8;
+        --accent: #7fd4e8;
+        --accent-ink: #06222c;
+        --sel-bg: #123040;
+        --sel-ink: #a8e8f6;
+        --sel-edge: #7fd4e8;
+        --radius: 2px;
+        --border: 1px;
+        --font: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        --label-spacing: 0.1em;
+        --label-transform: uppercase;
+        --canvas-edge: #2d4468;
+        --ic-line: #7fd4e8;
+        --ic-ink: #a8e8f6;
+        --ic-bg: rgba(10, 16, 32, 0.86);
+      }
+
+      /* ==================================================================
+         PAGE
+         ================================================================== */
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        height: 100dvh;
+        background: var(--bg);
+        color: var(--ink);
+        font: 13px/1.4 var(--font);
+        overflow: hidden;
+      }
+
+      *:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 1px;
+      }
+
+      /* ------------------------------------------------------------------
+         THE SHELL
+
+         Two plans, chosen by `sandUi.relayout` from the window's shape:
+           sidebar  landscape: the sidebar left, the swatch bar along the
+                    bottom, the canvas in what is left.
+           band     portrait: the sidebar's sections side by side in a band
+                    above the swatch bar.
+         The canvas FILLS its cell; the world is built to the cell's shape
+         (`main.ts`), so there is no letterbox.
+         ------------------------------------------------------------------ */
+      #shell {
+        --u: calc(var(--ui) * 1px);
+        --r: calc(var(--corner) * var(--rmul) * var(--u));
+        display: grid;
+        height: 100%;
+        box-sizing: border-box;
+        gap: calc(var(--pad) * var(--u));
+        padding:
+          calc(env(safe-area-inset-top, 0px) + var(--pad) * var(--u))
+          calc(env(safe-area-inset-right, 0px) + var(--pad) * var(--u))
+          calc(env(safe-area-inset-bottom, 0px) + var(--pad) * var(--u))
+          calc(env(safe-area-inset-left, 0px) + var(--pad) * var(--u));
+        font-size: calc(11 * var(--u));
+        line-height: 1.25;
+        /* A long press is the swatch menu's gesture on touch; without these
+           the OS reads it as "select this text" or raises its callout. */
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+      #shell[data-plan='sidebar'] {
+        grid-template-columns: calc(var(--side-w) * var(--u)) minmax(0, 1fr);
+        grid-template-rows: minmax(0, 1fr) auto;
+        grid-template-areas: 'side stage' 'bar bar';
+      }
+      #shell[data-plan='band'] {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: minmax(0, 1fr) auto auto;
+        grid-template-areas: 'stage' 'side' 'bar';
+      }
+
+      /* ------------------------------------------------------------------
+         THE STAGE: the canvas and what floats over it
+         ------------------------------------------------------------------ */
+      #stage {
+        grid-area: stage;
+        position: relative;
+        min-width: 0;
+        min-height: 0;
+      }
+      #app {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        display: block;
+        box-sizing: border-box;
+        background: #000;
+        border: var(--border) solid var(--canvas-edge);
+        /* The canvas handles its own gestures; without this the browser
+           would pan and pinch the page instead of letting a drag paint. */
+        touch-action: none;
+      }
+      /* EDITING INITIAL CONDITIONS. An outline, inset, so it neither moves
+         the element's box nor spills over the sidebar. */
+      #app[data-editing='true'] {
+        outline: 2px dashed var(--ic-line);
+        outline-offset: -6px;
+      }
+
+      #ic-banner,
+      #ic-set,
+      #sand-status {
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        max-width: 92%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        border-radius: var(--r);
+        pointer-events: none;
+      }
+      #ic-banner,
+      #ic-set {
+        top: calc(14 * var(--u));
+        padding: calc(6 * var(--u)) calc(16 * var(--u));
+        background: var(--ic-bg);
+        color: var(--ic-ink);
+        border: var(--border) solid var(--ic-line);
+        font-family: var(--font-label);
+        font-size: calc(10 * var(--u));
+        letter-spacing: var(--label-spacing);
+        text-transform: var(--label-transform);
+        display: none;
+        z-index: 3;
+      }
+      #ic-banner[data-visible='true'],
+      #ic-set[data-visible='true'] {
+        display: block;
+      }
+      /* The banner's twin in the same spot, shown while paused OUTSIDE the
+         editing state: pressing it captures the scene and puts the banner up. */
+      #ic-set {
+        appearance: none;
+        margin: 0;
+        line-height: inherit;
+        pointer-events: auto;
+        cursor: pointer;
+      }
+      #ic-set:hover {
+        background: var(--ic-line);
+        color: var(--ic-bg);
+      }
+      #sand-status {
+        bottom: calc(8 * var(--u));
+        padding: calc(2 * var(--u)) calc(8 * var(--u));
+        background: var(--ic-bg);
+        color: var(--ink-dim);
+        font-size: calc(11 * var(--u));
+        font-variant-numeric: tabular-nums;
+        z-index: 2;
+      }
+
+      /* --- the World menu, in the canvas's top-left corner --------------- */
+      #corner {
+        position: absolute;
+        z-index: 4;
+        top: calc(8 * var(--u));
+        left: calc(8 * var(--u));
+      }
+      #wpick {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      /* ONE BUTTON: the face with the label and a caret tab hanging below
+         it. The tab overlaps the face's bottom border so the two read as
+         one shape, and the whole thing is the touch target. */
+      #wtrig {
+        appearance: none;
+        background: none;
+        border: 0;
+        padding: 0;
+        margin: 0;
+        font: inherit;
+        color: var(--ink);
+        cursor: pointer;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        opacity: 0.94;
+      }
+      .wface {
+        display: flex;
+        align-items: center;
+        box-sizing: border-box;
+        height: calc(var(--wbtn-h) * var(--u));
+        padding: 0 calc(var(--wbtn-h) * 0.4 * var(--u));
+        font-size: calc(var(--wbtn-h) * 0.42 * var(--u));
+        white-space: nowrap;
+        background: var(--chrome-2);
+        border: var(--border) solid var(--edge);
+        border-radius: var(--r);
+      }
+      .wtab {
+        position: relative;
+        z-index: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-sizing: border-box;
+        width: calc(var(--wbtn-h) * 0.9 * var(--u));
+        height: calc(var(--wbtn-h) * 0.45 * var(--u));
+        margin-top: calc(-1 * var(--border));
+        background: var(--chrome-2);
+        border: var(--border) solid var(--edge);
+        border-top: 0;
+        border-radius: 0 0 var(--r) var(--r);
+      }
+      .wtab svg {
+        width: 60%;
+        height: 70%;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2.6;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        transition: transform 0.15s ease;
+      }
+      /* Points up while the menu is open: tap again to put it away. */
+      #wpick[data-open='true'] .wtab svg {
+        transform: rotate(180deg);
+      }
+      #wgrid {
+        display: none;
+        grid-template-columns: repeat(2, auto);
+        gap: calc(var(--wsw-gap) * var(--u));
+        margin-top: calc(8 * var(--u));
+      }
+      #wpick[data-open='true'] #wgrid {
+        display: grid;
+      }
+      .wsw {
+        position: relative;
+        width: calc((var(--wsw-d) + 12) * var(--u));
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      .wswb {
+        appearance: none;
+        width: calc(var(--wsw-d) * var(--u));
+        height: calc(var(--wsw-d) * var(--u));
+        border-radius: 50%;
+        padding: 0;
+        margin: 0;
+        background: var(--g);
+        /* For a captured icon; a stand-in gradient ignores these. */
+        background-size: cover;
+        background-position: center;
+        border: calc(2 * var(--u)) solid rgba(255, 255, 255, 0.28);
+        cursor: pointer;
+        box-sizing: border-box;
+      }
+      .wsw[data-selected='true'] .wswb {
+        box-shadow:
+          0 0 0 calc(2 * var(--u)) #000,
+          0 0 0 calc(4 * var(--u)) var(--accent);
+      }
+      /* Assigned to a save that has since been deleted. Says what happened
+         rather than silently reading as unassigned. */
+      .wsw[data-missing='true'] .wswb {
+        border: calc(2 * var(--u)) dashed #d06060;
+        opacity: 0.6;
+      }
+      /* The name, ON the swatch, over a plate so it reads against both the
+         swatch artwork and the canvas. */
+      .wl {
+        position: absolute;
+        z-index: 1;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        max-width: calc(var(--wsw-d) * var(--u));
+        box-sizing: border-box;
+        font-size: calc(var(--wsw-fs) * var(--u));
+        line-height: 1.3;
+        color: #ffffff;
+        background: rgba(0, 0, 0, var(--wl-bg));
+        padding: 0 calc(5 * var(--u));
+        border-radius: calc(4 * var(--rmul) * var(--u));
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        pointer-events: none;
+      }
+
+      /* ------------------------------------------------------------------
+         THE SIDEBAR (or, in the band plan, the band)
+         ------------------------------------------------------------------ */
+      #side {
+        grid-area: side;
+        display: flex;
+        flex-direction: column;
+        gap: calc(var(--pad) * var(--u));
+        min-height: 0;
+        min-width: 0;
+        overflow-x: hidden;
+        overflow-y: auto;
+        scrollbar-width: thin;
+      }
+      #shell[data-plan='band'] #side {
+        flex-direction: row;
+        overflow: visible;
+        align-items: stretch;
+      }
+      #shell[data-plan='band'] .sec {
+        flex: 1 1 0;
+        min-width: 0;
+      }
+      #shell[data-plan='band'] #toolsec {
+        flex-grow: 1.4;
+      }
+
+      .sec {
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        gap: calc(var(--btn-gap) * var(--u));
+        box-sizing: border-box;
+        padding: calc(var(--sec-pad) * var(--u));
+        background: var(--chrome);
+        border: var(--border) solid var(--edge);
+        border-radius: var(--r);
+      }
+      .lbl {
+        font-family: var(--font-label);
+        font-size: calc(var(--label-fs) * var(--u));
+        letter-spacing: var(--label-spacing);
+        text-transform: var(--label-transform);
+        color: var(--ink-dim);
+        white-space: nowrap;
+      }
+      .lbl.sub {
+        margin-top: calc(var(--btn-gap) * var(--u));
+      }
+      .grid {
+        display: grid;
+        gap: calc(var(--btn-gap) * var(--u));
+        grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+      }
+      #tools {
+        --cols: var(--tool-cols);
+      }
+      #shell[data-plan='band'] #tools {
+        --cols: var(--band-tool-cols);
+      }
+      .sizes {
+        --cols: 2;
+      }
+
+      /* THE BAND'S SIZE SECTION: in the band, the brush sizes take the
+         place the World panel used to have, as their own narrow section,
+         so the band stays thin. In the sidebar they sit under the tools. */
+      #sizesec {
+        display: none;
+      }
+      #shell[data-plan='band'] #sizesec {
+        display: flex;
+        flex: 0 0 auto;
+      }
+      #shell[data-plan='band'] #toolsec .sizes,
+      #shell[data-plan='band'] #size-lbl {
+        display: none;
+      }
+      #sizesec .sizes {
+        grid-template-columns: repeat(2, calc(var(--size-w) * var(--u)));
+      }
+
+      /* THE TOOL BOX: under Simulation, sidebar plan only, and only when the
+         sidebar has room for it -- `sandUi.relayout` measures and sets
+         data-box. It then holds Erase/Shove/Walls buttons in one column. */
+      #toolbox {
+        display: none;
+        height: calc(var(--box-h) * var(--u));
+      }
+      #shell[data-box='on'] #toolbox {
+        display: flex;
+      }
+
+      /* --- buttons ------------------------------------------------------- */
+      .b {
+        appearance: none;
+        font: inherit;
+        color: var(--ink);
+        background: var(--chrome-2);
+        border: var(--border) solid var(--edge);
+        border-radius: var(--r);
+        padding: 0;
+        margin: 0;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        box-sizing: border-box;
+      }
+      .b:hover:not([data-selected='true']) {
+        border-color: var(--accent);
+      }
+      .b[data-selected='true'] {
+        background: var(--sel-bg);
+        color: var(--sel-ink);
+        border-color: var(--sel-edge);
+      }
+      .b svg {
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        pointer-events: none;
+      }
+      .b svg .fill {
+        fill: currentColor;
+        stroke: none;
+      }
+
+      .tool {
+        height: calc(var(--tool-h) * var(--u));
+        flex-direction: column;
+        gap: calc(3 * var(--u));
+        font-family: var(--font-label);
+        font-size: calc(10 * var(--u));
+      }
+      .tool svg {
+        width: calc(20 * var(--u));
+        height: calc(20 * var(--u));
+      }
+      .size {
+        height: calc(var(--size-h) * var(--u));
+      }
+      .size span {
+        display: block;
+        border-radius: 50%;
+        background: currentColor;
+        width: calc(var(--dot) * var(--u));
+        height: calc(var(--dot) * var(--u));
+        pointer-events: none;
+      }
+      .simrow {
+        display: flex;
+        justify-content: center;
+        gap: calc(var(--btn-gap) * 2 * var(--u));
+      }
+      .round {
+        width: calc(var(--sim-d) * var(--u));
+        height: calc(var(--sim-d) * var(--u));
+        border-radius: 50%;
+        flex: 0 0 auto;
+      }
+      .round svg {
+        width: 44%;
+        height: 44%;
+      }
+      /* In the band the Simulation section can be narrower than two circles
+         at full size, so they shrink to share its width. */
+      #shell[data-plan='band'] .round {
+        width: min(
+          calc(var(--sim-d) * var(--u)),
+          calc(50% - var(--btn-gap) * var(--u))
+        );
+        height: auto;
+        aspect-ratio: 1;
+      }
+      .reset {
+        height: calc(var(--reset-h) * var(--u));
+        gap: calc(6 * var(--u));
+        font-size: calc(11 * var(--u));
+      }
+      .reset svg {
+        width: calc(16 * var(--u));
+        height: calc(16 * var(--u));
+      }
+
+      /* --- tool actions: in the bar, or in the tool box ---------------- */
+      .act {
+        flex: 1 1 0;
+        min-height: 0;
+        padding: 0 calc(6 * var(--u));
+        font-size: calc(12 * var(--u));
+        line-height: 1.2;
+        text-align: center;
+        background: color-mix(in srgb, var(--tint, transparent) 16%, var(--chrome-2));
+        border-color: color-mix(in srgb, var(--tint, var(--edge)) 45%, var(--edge));
+      }
+      .act.red {
+        --tint: #e0524a;
+      }
+      .act.yellow {
+        --tint: #e8c33d;
+      }
+      .act.white {
+        --tint: #ffffff;
+      }
+      /* Push/Pull is a choice, so the chosen one reads as selected. */
+      .act.pp[data-selected='true'] {
+        background: color-mix(in srgb, var(--tint) 34%, var(--chrome-2));
+        border-color: var(--tint);
+        border-width: calc(2 * var(--u));
+        color: var(--ink);
+      }
+      :root[data-theme='system7'] .act.pp[data-selected='true'] {
+        background: var(--sel-bg);
+        color: var(--sel-ink);
+      }
+      /* Built but not done yet: the button is there so the layout is final,
+         and says so when pressed. */
+      .act[data-todo='true'] {
+        opacity: 0.6;
+      }
+      .boxacts {
+        display: none;
+        flex: 1 1 auto;
+        min-height: 0;
+        flex-direction: column;
+        gap: calc(var(--btn-gap) * var(--u));
+      }
+      .boxacts .act {
+        font-size: calc(11 * var(--u));
+      }
+      #toolbox[data-for='erase'] .boxacts[data-for='erase'],
+      #toolbox[data-for='shove'] .boxacts[data-for='shove'],
+      #toolbox[data-for='walls'] .boxacts[data-for='walls'] {
+        display: flex;
+      }
+
+      /* ------------------------------------------------------------------
+         THE SWATCH BAR
+
+         One row of round swatches. For every tool but Brush, that tool's
+         buttons cover the row instead -- the row stays in the layout,
+         invisible, so the bar keeps its height and the canvas does not jump
+         when the tool changes. `#bar[data-show]` says which is up.
+         ------------------------------------------------------------------ */
+      #bar {
+        grid-area: bar;
+        position: relative;
+        display: flex;
+        min-width: 0;
+        overflow: hidden;
+        padding: calc(var(--bar-pad) * var(--u));
+        background: var(--chrome);
+        border: var(--border) solid var(--edge);
+        border-radius: var(--r);
+      }
+      #swatches {
+        flex: 1 1 auto;
+        min-width: 0;
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+      }
+      #bar:not([data-show='none']) #swatches {
+        visibility: hidden;
+      }
+      /* Past what fits (`sandUi.layoutSwatches`). Stated because `.sw`'s own
+         display would otherwise beat the UA's [hidden] rule. */
+      .sw[hidden] {
+        display: none;
+      }
+      .sw {
+        flex: 0 0 auto;
+        width: calc((var(--sw-d) + var(--sw-gap)) * var(--u));
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: calc(3 * var(--u));
+      }
+      .sw-name {
+        font-size: calc(var(--sw-name-fs) * var(--u));
+        max-width: calc((var(--sw-d) + var(--sw-gap) - 4) * var(--u));
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--ink-dim);
+        pointer-events: none;
+      }
+      .sw[data-selected='true'] .sw-name {
+        color: var(--ink);
+      }
+      :root[data-theme='system7'] .sw-name {
+        color: var(--ink);
+      }
+      .swb {
+        appearance: none;
+        width: calc(var(--sw-d) * var(--u));
+        height: calc(var(--sw-d) * var(--u));
+        border-radius: 50%;
+        padding: 0;
+        margin: calc(4 * var(--u)) 0;
+        background: var(--swatch-color, var(--ink-dim));
+        /* A captured icon covers the colour (swatchIcon.ts). After the
+           shorthand, which would otherwise reset it. */
+        background-image: var(--swatch-icon, none);
+        background-size: cover;
+        background-position: center;
+        border: calc(2 * var(--u)) solid rgba(0, 0, 0, 0.35);
+        cursor: pointer;
+        box-sizing: border-box;
+      }
+      /* AN EMPTY SWATCH (Custom only -- a world's empty slots are not drawn)
+         is an outline: nothing can be painted from it. */
+      .sw[data-empty='true'] .swb {
+        background: transparent;
+        border: calc(2 * var(--u)) dashed var(--edge);
+      }
+      .sw[data-empty='true'] .sw-name {
+        font-style: italic;
+      }
+      .sw[data-selected='true'] .swb {
+        box-shadow:
+          0 0 0 calc(2 * var(--u)) var(--chrome),
+          0 0 0 calc(4 * var(--u)) var(--accent);
+      }
+
+      .acts {
+        display: none;
+        position: absolute;
+        inset: calc((var(--bar-pad) + 4) * var(--u));
+        gap: calc(max(var(--btn-gap), 4) * var(--u));
+      }
+      #bar[data-show='erase'] .acts[data-for='erase'],
+      #bar[data-show='shove'] .acts[data-for='shove'],
+      #bar[data-show='walls'] .acts[data-for='walls'],
+      #bar[data-show='stamp'] .acts[data-for='stamp'] {
+        display: flex;
+      }
+
+      /* Stamp: New stamp beside the leftmost stored stamp, the group centred.
+         Stamps use the swatch circles and spacing, without names. */
+      .acts[data-for='stamp'] {
+        inset: calc(var(--bar-pad) * var(--u));
+      }
+      .stamps {
+        flex: 1 1 auto;
+        min-width: 0;
+        display: flex;
+        align-items: stretch;
+        justify-content: center;
+        overflow: hidden;
+      }
+      .sgroup {
+        display: flex;
+        align-items: flex-end;
+      }
+      .newstamp {
+        flex: 0 0 auto;
+        align-self: stretch;
+        margin: calc(4 * var(--u)) calc(4 * var(--u)) calc(4 * var(--u)) 0;
+        padding: 0 calc(14 * var(--u));
+        white-space: nowrap;
+        background: var(--chrome-2);
+        border-color: var(--edge);
+      }
+      .st .sw-name {
+        visibility: hidden;
+      }
+      .st .swb {
+        background: var(--p);
+      }
+
+      /* ------------------------------------------------------------------
+         THE LOAD MENU -- right-click (or long-press) a swatch. A dev
+         surface; style is deliberately minimal.
+         ------------------------------------------------------------------ */
+      #loader,
+      #world-loader {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.6);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 20;
+      }
+      #loader[data-open='true'],
+      #world-loader[data-open='true'] {
+        display: flex;
+      }
+      .loader-panel {
+        background: var(--chrome);
+        border: var(--border) solid var(--edge);
+        border-radius: var(--radius);
+        width: min(520px, 92vw);
+        max-height: 72vh;
+        overflow: auto;
+        padding: 12px 14px;
+      }
+      .loader-panel h2 {
+        margin: 0 0 8px;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .loader-panel h3 {
+        margin: 10px 0 4px;
+        font-size: 10px;
+        font-family: var(--font-label);
+        letter-spacing: var(--label-spacing);
+        text-transform: uppercase;
+        color: var(--ink-dim);
+      }
+      .entry {
+        display: block;
+        width: 100%;
+        text-align: left;
+        background: none;
+        border: 1px solid transparent;
+        border-radius: var(--radius);
+        color: var(--ink);
+        padding: 3px 6px;
+        cursor: pointer;
+        font: inherit;
+      }
+      .entry:hover {
+        background: var(--chrome-2);
+        border-color: var(--edge);
+      }
+      /* "None" -- clears the swatch. Set apart from the configs because it
+         is the only destructive row in the list. */
+      .entry[data-none='true'] {
+        color: var(--ink-dim);
+        font-style: italic;
+        border-bottom: 1px solid var(--edge-soft);
+        border-radius: 0;
+        margin-bottom: 6px;
+        padding-bottom: 6px;
+      }
+      /* "Paste from link" -- an action, not a config, so it is set apart
+         from the list the same way "None" is. */
+      .entry[data-paste='true'],
+      .entry[data-capture='true'],
+      .entry[data-rename='true'] {
+        color: var(--accent);
+        border-bottom: 1px solid var(--edge-soft);
+        border-radius: 0;
+        margin-bottom: 6px;
+        padding-bottom: 6px;
+      }
+      /* Compatible with the master element's world settings -- see
+         compatibility.ts. Green means "this will look like it should here". */
+      .entry[data-compatible='true'] {
+        color: #6ee08a;
+      }
+      /* The Worlds section: a palette per row, its swatches beneath when
+         expanded. The arrow is the only cue the row opens rather than loads. */
+      /* A config category's heading: the whole heading toggles its list. */
+      .category-toggle {
+        background: none;
+        border: 0;
+        padding: 0;
+        font: inherit;
+        color: inherit;
+        letter-spacing: inherit;
+        text-transform: inherit;
+        cursor: pointer;
+      }
+      .category-toggle::before,
+      .entry[data-source]::before {
+        content: '\25B8';
+        display: inline-block;
+        width: 1em;
+        color: var(--ink-dim);
+      }
+      .category-toggle[data-expanded='true']::before,
+      .entry[data-source][data-expanded='true']::before {
+        content: '\25BE';
+      }
+      .source-swatches {
+        margin: 0 0 4px 1em;
+        border-left: 1px solid var(--edge-soft);
+        padding-left: 4px;
+      }
+      .source-swatches .entry {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .source-dot {
+        flex: none;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: var(--chrome-2);
+        background-size: cover;
+        background-position: center;
+        border: 1px solid var(--edge);
+      }
+      .source-index {
+        margin-left: auto;
+        color: var(--ink-dim);
+        font-size: 11px;
+      }
+      .source-note {
+        color: var(--ink-dim);
+        font-size: 11px;
+        padding: 3px 6px;
+      }
+      .loader-hint {
+        margin-top: 10px;
+        color: var(--ink-dim);
+        font-size: 11px;
+      }
+
+      /* THE WORLD LOADER's rows are a name plus an X, because a saved world
+         can be deleted and a shipped config cannot. The row is the hit area;
+         the X stops propagation so it cannot load what it is deleting. */
+      .world-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        width: 100%;
+        border: 1px solid transparent;
+        border-radius: var(--radius);
+        padding: 3px 6px;
+        cursor: pointer;
+      }
+      .world-row:hover {
+        background: var(--chrome-2);
+        border-color: var(--edge);
+      }
+      .world-row-name {
+        flex: 1;
+        text-align: left;
+        color: var(--ink);
+        font: inherit;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .world-row-delete {
+        background: transparent;
+        border: 0;
+        color: #d06060;
+        cursor: pointer;
+        font: 12px var(--font-label), system-ui, sans-serif;
+        padding: 0 4px;
+        line-height: 1;
+      }
+      .world-row-delete:hover {
+        color: #ff8080;
+      }
+      .world-empty {
+        color: var(--ink-dim);
+        font-style: italic;
+        font-size: 11px;
+        padding: 6px 0;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        * {
+          transition: none !important;
+          animation: none !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Everything inside #shell is built by `sandUi.ts`, into these
+         containers. The ids are its contract with this file. -->
+    <div id="shell" data-plan="sidebar">
+      <div id="stage">
+        <canvas id="app"></canvas>
+        <div id="corner">
+          <div id="wpick">
+            <button type="button" id="wtrig" aria-label="World menu" title="Choose a world">
+              <span class="wface">World…</span>
+              <span class="wtab"><svg viewBox="0 0 24 14" aria-hidden="true"><path d="M6 4l6 6 6-6" /></svg></span>
+            </button>
+            <div id="wgrid"></div>
+          </div>
+        </div>
+        <div id="ic-banner">Editing Initial Conditions</div>
+        <button type="button" id="ic-set" title="Make the scene on screen the one Reset returns to">Set as initial conditions</button>
+        <div id="sand-status"></div>
+      </div>
+
+      <aside id="side">
+        <section class="sec" id="sizesec">
+          <div class="lbl">Size</div>
+          <div class="grid sizes" id="sizes-band"></div>
+        </section>
+        <section class="sec" id="toolsec">
+          <div class="lbl">Tools</div>
+          <div class="grid" id="tools"></div>
+          <div class="lbl sub" id="size-lbl">Size</div>
+          <div class="grid sizes" id="sizes"></div>
+        </section>
+        <section class="sec" id="simsec">
+          <div class="lbl">Simulation</div>
+          <div class="simrow" id="simrow"></div>
+          <div id="reset-slot"></div>
+        </section>
+        <section class="sec" id="toolbox">
+          <div class="lbl" id="toolbox-label"></div>
+        </section>
+      </aside>
+
+      <footer id="bar" data-show="none">
+        <div id="swatches"></div>
+      </footer>
+    </div>
+
+    <div id="loader">
+      <div class="loader-panel">
+        <h2>Load into swatch <span id="loader-slot"></span></h2>
+        <div id="loader-list"></div>
+        <div class="loader-hint">
+          Green entries are compatible with the master element's trail
+          persistence. Esc to cancel.
+        </div>
+      </div>
+    </div>
+
+    <!-- The world library. Dev-only for now: opened by "Load world" on the
+         Dev tab, and the place worlds are deleted from. -->
+    <div id="world-loader">
+      <div class="loader-panel">
+        <h2 id="world-loader-title">Load world</h2>
+        <div id="world-loader-list"></div>
+        <div class="loader-hint">
+          Loading a world replaces the palette and the initial conditions.
+          Esc to cancel.
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/sand/main.ts"></script>
+  </body>
+</html>

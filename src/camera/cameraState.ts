@@ -1,0 +1,262 @@
+/**
+ * CameraState: where the viewer is looking, and in which mode.
+ * A direct port of `camera/camera_state.py`.
+ *
+ * Deliberately tiny and free of GPU code: pan, zoom, mode. All the transform
+ * math lives in `particleSystem/coords.ts` (ARCHITECTURE.md rule 9) -- this
+ * module only decides *what* pan and zoom are, never how to apply them.
+ *
+ * CONVENTIONS (both differ from the original Fluoddity, on purpose):
+ *   zoom  bigger = zoomed IN, a magnification factor. zoom=1 fits the world.
+ *   pan   world units; the world point sitting at the center of the view.
+ *
+ * The original stored zoom inverted (smaller = closer) and pan in "ndc x zoom"
+ * units with a negated y, which made pan values meaningless without also
+ * knowing the zoom. These conventions make both directly readable.
+ */
+
+import {
+  type CanvasSize,
+  type Vec2,
+  type WindowSize,
+  screenToWorld,
+  vec2Equals,
+  worldHalfExtent,
+} from '../particleSystem/coords.ts';
+
+/**
+ * Zoom limits. Below the minimum the world is a speck; above the maximum
+ * floating-point precision in the canvas uv lookup starts to show.
+ */
+export const MIN_ZOOM = 0.1;
+export const MAX_ZOOM = 100.0;
+
+/** Multiplier per scroll notch. */
+export const ZOOM_PER_NOTCH = 1.1;
+
+/**
+ * Keyboard pan speed, as a fraction of the visible height per second. Held
+ * keys, so this is a RATE rather than a step -- a per-frame step would move
+ * twice as fast at 120fps as at 60.
+ *
+ * Nothing in this module reads it: the code that samples held keys against a
+ * frame delta and calls `panByFraction` is a later step's job. Exported here
+ * because the constant belongs with the camera, not with the input handler.
+ */
+export const PAN_PER_SECOND = 0.9;
+
+/**
+ * Keyboard zoom rate, as a multiplier per second. Exponential because zoom is
+ * multiplicative: a fixed additive step would crawl when zoomed out and lurch
+ * when zoomed in. Consumed by the same later step as `PAN_PER_SECOND`.
+ */
+export const ZOOM_PER_SECOND = 2.2;
+
+/**
+ * What the camera draws.
+ *
+ * TRAIL     the accumulated velocity flow-field the particles write into.
+ *           Smooth and continuous -- the trails ARE the simulation state.
+ * PARTICLES each entity drawn as an instanced sprite, coloured by its own
+ *           output. Shows where the particles actually are, which the trail
+ *           view only implies. The DEFAULT: it is the more direct view of
+ *           what the simulation is doing, and the only one that carries the
+ *           per-particle colour signal.
+ *
+ * An ORDERED ARRAY rather than an object, because the order *is* the
+ * semantics: `nextCameraMode` cycles through it, mirroring the Python enum's
+ * declaration-order `next()`. Reordering this changes what the toggle does.
+ */
+export const CAMERA_MODES = ['trail', 'particles'] as const;
+
+export type CameraMode = (typeof CAMERA_MODES)[number];
+
+/**
+ * A mode by its saved string value, or `null` if unrecognized.
+ *
+ * For the camera block of a save file, which stores `CameraMode.value` as a
+ * plain string (`persistence.py:171-175`). `null` rather than a default because
+ * the caller must LEAVE THE MODE ALONE on an unrecognized value -- the desktop's
+ * for-loop simply finds no match and falls through, which is the same behaviour
+ * spelled differently (`project_commands.py:249-253`).
+ */
+export function cameraModeFromValue(value: string): CameraMode | null {
+  return (CAMERA_MODES as readonly string[]).includes(value)
+    ? (value as CameraMode)
+    : null;
+}
+
+/** The next mode in declaration order, wrapping. */
+export function nextCameraMode(mode: CameraMode): CameraMode {
+  const index = CAMERA_MODES.indexOf(mode);
+  // The modulo makes this always in range; the fallback exists because
+  // `noUncheckedIndexedAccess` cannot prove that, and naming 'particles' here
+  // documents the default mode rather than hiding behind a non-null assertion.
+  return CAMERA_MODES[(index + 1) % CAMERA_MODES.length] ?? 'particles';
+}
+
+/**
+ * Mutable camera state. Small enough to copy, cheap to save/load later.
+ *
+ * A class, unlike the config value types, because the Python dataclass is
+ * deliberately NOT frozen and its methods mutate for effect. `zoomAtPixel` in
+ * particular reads pan and zoom twice *around* a mutation, which is natural
+ * with mutation and awkward threaded immutably.
+ */
+export class CameraState {
+  pan: Vec2 = [0.0, 0.0];
+  zoom = 1.0;
+  mode: CameraMode = 'particles';
+
+  constructor(init?: { pan?: Vec2; zoom?: number; mode?: CameraMode }) {
+    if (init?.pan !== undefined) this.pan = init.pan;
+    if (init?.zoom !== undefined) this.zoom = init.zoom;
+    if (init?.mode !== undefined) this.mode = init.mode;
+  }
+
+  /**
+   * Reset the view.
+   *
+   * Deliberately does NOT reset `mode`: which view you are looking through is
+   * a display preference, not part of "where am I looking". Preserved from the
+   * Python; do not "fix" it into resetting all three fields.
+   */
+  reset(): void {
+    this.pan = [0.0, 0.0];
+    this.zoom = 1.0;
+  }
+
+  /**
+   * Zoom by `notches`, keeping the world point under `pixel` fixed.
+   *
+   * The anchor is what makes scroll-zoom feel controlled instead of lurching:
+   * find the world point under the cursor, apply the zoom, then pan so that
+   * same point lands back under the cursor.
+   *
+   * Note the ordering: `setZoom` clamps BEFORE `after` is computed, so at a
+   * zoom limit `before` and `after` agree and the pan correction correctly
+   * becomes a no-op. Computing `after` from an unclamped zoom would drift the
+   * view every time the user kept scrolling at the limit.
+   */
+  zoomAtPixel(
+    notches: number,
+    pixel: Vec2,
+    windowSize: WindowSize,
+    canvasSize: CanvasSize,
+  ): void {
+    if (!notches) return;
+    // NOTE screenToWorld's argument order: pixel, WINDOW, CANVAS.
+    const before = screenToWorld(pixel, windowSize, canvasSize, this.pan, this.zoom);
+    this.setZoom(this.zoom * ZOOM_PER_NOTCH ** notches);
+    const after = screenToWorld(pixel, windowSize, canvasSize, this.pan, this.zoom);
+    this.pan = [
+      this.pan[0] + (before[0] - after[0]),
+      this.pan[1] + (before[1] - after[1]),
+    ];
+  }
+
+  /**
+   * Pan by a fraction of the VISIBLE height, per axis.
+   *
+   * Keyboard navigation, so the step is time-based rather than pixel-based
+   * (see `PAN_PER_SECOND`). Scaled by 1/zoom so a keypress covers the same
+   * proportion of the screen at any magnification -- zoomed in, the same key
+   * travels a smaller world distance, which is what makes it feel like moving
+   * at a constant speed rather than lurching.
+   *
+   * HEIGHT, NOT WIDTH, ON BOTH AXES: using each axis's own extent would make
+   * diagonal movement faster on a wide canvas. This looks like a bug and is
+   * not; it is the one line of this method most likely to be "corrected".
+   */
+  panByFraction(fraction: Vec2, canvasSize: CanvasSize): void {
+    // Element-wise, because JavaScript arrays compare by reference: the direct
+    // transcription of Python's `fraction == (0.0, 0.0)` would always be false.
+    if (vec2Equals(fraction, [0.0, 0.0])) return;
+    const [, extentY] = worldHalfExtent(canvasSize);
+    const step = (2.0 * extentY) / this.zoom;
+    this.pan = [this.pan[0] + fraction[0] * step, this.pan[1] + fraction[1] * step];
+  }
+
+  /**
+   * Pan by a screen-pixel delta, so the world tracks a dragging finger exactly.
+   *
+   * **THE THIRD PAN ENTRY POINT, AND THE ONLY PIXEL-EXACT ONE.**
+   * `panByFraction` is for the keyboard, where the input is a rate and "a
+   * comfortable amount of screen per second" is the right unit. A touch drag has
+   * no such freedom: the content under the finger must stay under the finger, or
+   * the map slides relative to the hand and every drag feels like ice. That is a
+   * conversion, not a tuning choice, which is why there is no speed constant
+   * here to get wrong.
+   *
+   * IMPLEMENTED BY DIFFERENCING TWO `screenToWorld` CALLS rather than by scaling
+   * the delta, and that is what makes it correct at every zoom and aspect. The
+   * pixel-to-world scale depends on zoom, on the canvas/window aspect mismatch
+   * and on the letterbox -- all of which `screenToWorld` already resolves. Any
+   * arithmetic here that did not go through it would be a second, divergent copy
+   * of that chain, and it would drift the moment either aspect changed.
+   *
+   * NEGATED, because dragging is GRABBING THE WORLD: a finger moving right pulls
+   * the content right, which means the camera moves LEFT. Dropping the negation
+   * gives an inverted-drag map, which reads as the gesture being backwards
+   * rather than as a sign error.
+   */
+  panByPixels(
+    deltaPixels: Vec2,
+    windowSize: WindowSize,
+    canvasSize: CanvasSize,
+  ): void {
+    if (vec2Equals(deltaPixels, [0.0, 0.0])) return;
+    // Two points one delta apart, measured through the full inverse chain at the
+    // CURRENT pan and zoom. Their difference is what that delta is worth in
+    // world units right now.
+    const origin = screenToWorld([0.0, 0.0], windowSize, canvasSize, this.pan, this.zoom);
+    const moved = screenToWorld(
+      [deltaPixels[0], deltaPixels[1]],
+      windowSize,
+      canvasSize,
+      this.pan,
+      this.zoom,
+    );
+    this.pan = [
+      this.pan[0] - (moved[0] - origin[0]),
+      this.pan[1] - (moved[1] - origin[1]),
+    ];
+  }
+
+  /**
+   * Zoom about the CENTER of the view, leaving pan untouched.
+   *
+   * Distinct from `zoomAtPixel`, which anchors on the cursor: a keyboard zoom
+   * has no cursor to anchor to, and pulling the view toward wherever the mouse
+   * happened to rest would be surprising.
+   */
+  zoomByFactor(factor: number): void {
+    if (factor === 1.0) return;
+    this.setZoom(this.zoom * factor);
+  }
+
+  /**
+   * Clamp and store a zoom.
+   *
+   * ## A deliberate divergence from the Python
+   *
+   * `max(MIN_ZOOM, min(MAX_ZOOM, zoom))` absorbs NaN by accident in Python:
+   * `nan < 100.0` is False, so `min` returns 100.0 and the NaN vanishes.
+   * JavaScript's `Math.max`/`Math.min` propagate NaN instead, which would be
+   * catastrophic and silent -- every later `screenToWorld` returns NaN and the
+   * camera is permanently broken with no error anywhere.
+   *
+   * So a non-finite zoom is REJECTED here, leaving the current zoom in place.
+   * That is a third behaviour, chosen over both: Python's clamp-to-max would
+   * teleport the user to maximum magnification, where refusing the update is
+   * the least surprising recovery. This is intentional, not an oversight.
+   */
+  setZoom(zoom: number): void {
+    if (!Number.isFinite(zoom)) return;
+    this.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom));
+  }
+
+  toggleMode(): void {
+    this.mode = nextCameraMode(this.mode);
+  }
+}
