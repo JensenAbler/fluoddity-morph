@@ -31,6 +31,7 @@
  * edit; this guards against a refresh CLOBBERING one.
  */
 
+import { cornersIcon } from './immersive.ts';
 import {
   type Command,
   type MouseMode,
@@ -76,6 +77,8 @@ export interface MutationOverlayOptions {
    * required argument they have to invent.
    */
   readonly onToggleUi?: () => void;
+  /** Full screen: hide all UI. The corners button beside the gear. */
+  readonly onImmersive?: () => void;
   /**
    * Build the touch layout. Defaults to false, which is the desktop bar.
    *
@@ -135,6 +138,8 @@ export class MutationOverlay {
   private readonly tool: HTMLSelectElement;
   /** The gear, at the right end. See its construction for why it lives here. */
   private readonly gear: HTMLButtonElement;
+  /** Full screen (hide all UI), beside the gear. */
+  private readonly fullscreen: HTMLButtonElement;
   /**
    * Pause/Resume, at the LEFT end of the touch bar's top row. `null` on desktop.
    *
@@ -716,6 +721,25 @@ export class MutationOverlay {
       this.gear.blur();
     });
 
+    // FULL SCREEN, beside the gear: the gear hides the panels, this hides
+    // EVERYTHING -- this bar included -- until Esc or the corner button.
+    this.fullscreen = document.createElement('button');
+    this.fullscreen.type = 'button';
+    this.fullscreen.style.cssText = GEAR_BUTTON_CSS;
+    this.fullscreen.dataset['setting'] = 'transport.fullscreen';
+    this.fullscreen.append(
+      cornersIcon(true, 14),
+      keyCaption(barKeySuffix([localHotkeyLabel('toggleImmersive')], opts.mobile === true)),
+    );
+    this.tooltip.attach(this.fullscreen, {
+      title: 'Full Screen',
+      body: 'Hide all UI and show only the simulation. Esc, or the faint button in the corner, brings it back.',
+    });
+    this.fullscreen.addEventListener('click', () => {
+      opts.onImmersive?.();
+      this.fullscreen.blur();
+    });
+
     // The tool control goes INSIDE the bar, not below it. Floating on its own
     // it read as a stray tooltip over the canvas rather than as part of the UI,
     // and a status line that looks like an error message is worse than none.
@@ -808,7 +832,7 @@ export class MutationOverlay {
       // freezes what the slider is changing, the other hides everything around
       // it. Both are fixed-width and centre against the two-line stack between
       // them, which is the arrangement the gear's own comment above describes.
-      top.append(this.pause, sliderGroup, this.gear);
+      top.append(this.pause, sliderGroup, this.gear, this.fullscreen);
 
       const bottom = document.createElement('div');
       bottom.style.cssText = TOUCH_BAR_ROW_CSS;
@@ -832,6 +856,7 @@ export class MutationOverlay {
         this.reset,
         this.tool,
         this.gear,
+        this.fullscreen,
       );
     }
     // --- the context hint row ----------------------------------------------

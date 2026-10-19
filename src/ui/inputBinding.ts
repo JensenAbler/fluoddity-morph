@@ -67,6 +67,8 @@ export interface InputBindingOptions {
   readonly showControls: () => void;
   /** Handle the `toggleMorph` local action -- `T`. The Morph Timeline window. */
   readonly toggleMorph?: () => void;
+  /** Handle the `toggleImmersive` local action -- `I`. Hide all UI. */
+  readonly toggleImmersive?: () => void;
   /** Defaults to `DEFAULT_HOTKEYS`; a parameter so a test or Step 10 can swap it. */
   readonly hotkeys?: readonly Hotkey[];
   /**
@@ -118,6 +120,7 @@ export function bindInput(opts: InputBindingOptions): {
     showGuide,
     showControls,
     toggleMorph,
+    toggleImmersive,
   } =
     opts;
   const canvas = surface.canvas;
@@ -306,6 +309,9 @@ export function bindInput(opts: InputBindingOptions): {
           break;
         case 'toggleMorph':
           toggleMorph?.();
+          break;
+        case 'toggleImmersive':
+          toggleImmersive?.();
           break;
         default: {
           const unreachable: never = hit.local;

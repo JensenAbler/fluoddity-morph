@@ -72,7 +72,8 @@ export type LocalAction =
   | 'copyShareImage'
   | 'showGuide'
   | 'showControls'
-  | 'toggleMorph';
+  | 'toggleMorph'
+  | 'toggleImmersive';
 
 /** One binding. Exactly one of `command`/`local` is set. */
 export interface Hotkey {
@@ -204,6 +205,9 @@ export const DEFAULT_HOTKEYS: readonly Hotkey[] = [
   // The Morph Timeline window. `local` for `toggleUi`'s reason: it is UI
   // chrome, and opening it changes nothing the Orchestrator owns.
   { code: 'KeyT', local: 'toggleMorph' },
+  // Full screen: hide ALL the UI, not just the panels. Local for `toggleUi`'s
+  // reason. Escape or the corner button brings it back.
+  { code: 'KeyI', local: 'toggleImmersive' },
   // Like: add what is on screen to the auto-evolve attractors. A Command,
   // since the attractor pool is the Orchestrator's.
   { code: 'KeyL', command: { kind: 'evolveLike' } },

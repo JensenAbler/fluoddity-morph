@@ -128,6 +128,8 @@ export interface MenuBarOptions {
    */
   /** History > Morph Timeline: show or hide the morph window. */
   readonly onToggleMorph: () => void;
+  /** Editor > Full Screen: hide every piece of UI until Esc or the corner button. */
+  readonly onToggleImmersive: () => void;
   readonly isMorphShown: () => boolean;
   readonly onToggleExportVideo: () => void;
   /** Whether the Recording Controls tab is showing, for the checkmark. */
@@ -636,6 +638,9 @@ export class MenuBar {
       this.addItem(body, 'Toggle UI Panels', () => this.opts.onToggleUi(), 'X', () =>
         this.opts.isUiHidden(),
       );
+      // Everything off, not just the panels: menu bar, mutation bar, windows.
+      // Escape or the faint corner button brings it all back.
+      this.addItem(body, 'Full Screen (hide all UI)', () => this.opts.onToggleImmersive(), 'I');
       // Tools WAS a top-level menu. It is three radio rows bound to `1`/`2`/`3`,
       // and the active tool is already shown by the mutation overlay -- so it
       // cost a slot in the bar to hold something the keys and the overlay

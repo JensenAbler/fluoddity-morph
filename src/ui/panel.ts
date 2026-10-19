@@ -64,6 +64,7 @@ import { GateState } from './gateState.ts';
 import { showsSlider } from './gatedControl.ts';
 import { MenuBar } from './menuBar.ts';
 import { MorphPanel } from './morphPanel.ts';
+import { Immersive } from './immersive.ts';
 import { MutationOverlay } from './mutationOverlay.ts';
 // The two button constants, so `touchDragButton` names them rather than
 // returning a bare 0 or 2 that the caller has to decode.
@@ -486,6 +487,8 @@ export class Panel {
   private readonly recordingBar: RecordingBar;
   /** The morph timeline window. Floats over everything; see `morphPanel.ts`. */
   private readonly morphPanel: MorphPanel;
+  /** Full screen with every piece of UI hidden. See `immersive.ts`. */
+  private readonly immersive = new Immersive();
 
   /**
    * The frame-rate button, top-right.
@@ -763,6 +766,9 @@ export class Panel {
       onToggleUi: () => {
         this.setHidden(!this.hiddenFlag);
       },
+      onImmersive: () => {
+        this.toggleImmersive();
+      },
       // Passed through rather than re-detected: `main.ts` resolves this once
       // and hands it down, so every part of the UI agrees about which layout it
       // is building. See `ui/mobile.ts`.
@@ -904,6 +910,9 @@ export class Panel {
         this.toggleMorph();
       },
       isMorphShown: () => this.morphPanel.isShown,
+      onToggleImmersive: () => {
+        this.toggleImmersive();
+      },
     });
 
     this.left = {
@@ -2156,6 +2165,11 @@ export class Panel {
     this.morphPanel.toggle();
   }
 
+  /** Hide every piece of UI (and go browser-fullscreen where allowed). Key I. */
+  toggleImmersive(): void {
+    this.immersive.toggle();
+  }
+
   showGuide(): void {
     this.splash.show('guide');
   }
@@ -2845,6 +2859,7 @@ export class Panel {
     this.overlay.dispose();
     this.recordingBar.dispose();
     this.morphPanel.dispose();
+    this.immersive.dispose();
     this.fpsCounter.dispose();
     this.splash.dispose();
     this.left.container.remove();

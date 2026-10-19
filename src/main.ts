@@ -710,6 +710,7 @@ async function start(): Promise<void> {
     showGuide: () => panel?.showGuide(),
     showControls: () => panel?.showControls(),
     toggleMorph: () => panel?.toggleMorph(),
+    toggleImmersive: () => panel?.toggleImmersive(),
     // Hands every touch pointer to `touchBinding.ts` below. False on the
     // desktop, where this file handles the pointer exactly as it always has.
     ignoreTouch: mobile,
