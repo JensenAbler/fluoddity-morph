@@ -174,16 +174,24 @@ export function geneOf(project: Project, i: number): number[] {
   return [record[spec.field] ?? 0];
 }
 
-/** Weighted pick by likes (minimum weight 1 so a fresh like still counts). */
+/**
+ * Weighted pick by likes. ♥0 MUTES an attractor: it stays in the list but is
+ * never chosen (unless everything is muted, when the pick falls back to even).
+ */
 export function pickAttractor(pool: readonly Attractor[], rng: Rng): Attractor | null {
   if (pool.length === 0) return null;
-  const total = pool.reduce((s, a) => s + Math.max(1, a.likes), 0);
+  const weight = (a: Attractor): number => Math.max(0, a.likes);
+  const total = pool.reduce((s, a) => s + weight(a), 0);
+  if (total <= 0) return pool[Math.floor(rng() * pool.length)] ?? null;
   let r = rng() * total;
   for (const a of pool) {
-    r -= Math.max(1, a.likes);
+    const w = weight(a);
+    if (w <= 0) continue;
+    r -= w;
     if (r <= 0) return a;
   }
-  return pool[pool.length - 1]!;
+  for (let i = pool.length - 1; i >= 0; i--) if (weight(pool[i]!) > 0) return pool[i]!;
+  return null;
 }
 
 /** Map a speed rank onto seconds, honoring min/max and skew. */
@@ -392,7 +400,12 @@ export class Evolver {
     if (pair === null) return g.x;
     const ga = geneOf(pair.a.project, i);
     const gb = geneOf(pair.b.project, i);
-    const t = ga.map((v, k) => v + this.w * (gb[k]! - v) + (g.offset[k] ?? 0));
+    // EXPLORATION PAST THE ENDS IS FOR THE RULE ONLY. Physics settings stay
+    // within the range the two favorites actually use: extrapolating drag or
+    // force past a preset's value is how the particles were driven into a dead
+    // stop (drag toward 0 keeps no velocity; force toward 0 pushes nothing).
+    const w = i < RULE_GENES ? this.w : clamp(this.w, 0, 1);
+    const t = ga.map((v, k) => v + w * (gb[k]! - v) + (g.offset[k] ?? 0));
     if (i >= RULE_GENES) {
       const spec = SCALARS[i - RULE_GENES]!;
       t[0] = clamp(t[0]!, spec.lo, spec.hi);

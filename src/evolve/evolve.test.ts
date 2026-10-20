@@ -189,3 +189,30 @@ test('momentum: velocity never collapses to zero while the point glides', () => 
   // be a moment, not a habit.
   assert.ok(stalls < 30, `stalled ${stalls} frames`);
 });
+
+test('♥0 mutes an attractor: never picked while others have likes', () => {
+  const ev = new Evolver(seeded(5));
+  ev.setPool([
+    { name: 'muted', project: project(0), likes: 0 },
+    { name: 'liked', project: project(1), likes: 1 },
+  ]);
+  const rng = seeded(9);
+  for (let i = 0; i < 500; i++) assert.equal(pickAttractor(ev.attractors, rng)?.name, 'liked');
+});
+
+test('physics settings never extrapolate past the favorites', () => {
+  const low = project(0, 0.4);
+  const high = project(1, 6);
+  const ev = new Evolver(seeded(17));
+  ev.setPool([
+    { name: 'a', project: low, likes: 1 },
+    { name: 'b', project: high, likes: 1 },
+  ]);
+  ev.settings.exploration = 1;
+  ev.settings.settingWander = 0;
+  ev.start(low);
+  for (let i = 0; i < 3000; i++) {
+    const gain = ev.step(0.2)!.configs[0]!.sensorGain;
+    assert.ok(gain >= 0.4 - 0.05 && gain <= 6 + 0.05, `gain ${gain}`);
+  }
+});

@@ -253,6 +253,8 @@ export class EvolveTab {
       );
       name.title = 'Stop evolving and show this one';
       const minus = this.button('−', ICON, () => send({ kind: 'evolveAdjustLikes', key: a.key, delta: -1 }));
+      minus.title = 'Fewer likes. At ♥0 this one is muted: kept, but never visited';
+      if (a.likes <= 0) name.style.opacity = '0.45';
       const likes = document.createElement('span');
       likes.textContent = `♥${String(a.likes)}`;
       likes.style.cssText = 'min-width:30px;text-align:center;color:#f9a8d4;font-variant-numeric:tabular-nums;';
