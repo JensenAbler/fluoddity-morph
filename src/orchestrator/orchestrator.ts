@@ -161,6 +161,7 @@ import { type Checkpoint, CheckpointStore } from './clipboardCommands.ts';
 import { MorphTimeline, startOf } from '../morph/morph.ts';
 import { Evolver } from '../evolve/evolve.ts';
 import { Telemetry, r4 } from '../telemetry/telemetry.ts';
+import { TemperatureProbe } from '../telemetry/temperature.ts';
 import { HOME_CATEGORY, SEED_LIKES } from '../evolve/seedPool.ts';
 import { clearPool, loadPool, savePool } from '../evolve/poolStore.ts';
 import { type GpuDeriver, createGpuDeriver } from '../archive/gpuDeriver.ts';
@@ -381,6 +382,9 @@ export class Orchestrator implements CommandBus {
 
   /** Samples and 👍/👎 marks to the server log. See `telemetry/telemetry.ts`. */
   private readonly telemetry = new Telemetry();
+
+  /** Measured particle motion ("0 kelvin" detector). Built on first frame. */
+  private temperatureProbe: TemperatureProbe | null = null;
 
   /**
    * Project state from before a hover-preview began, so a committed load
@@ -899,6 +903,7 @@ export class Orchestrator implements CommandBus {
     }
     if (this.evolver.running && !this.paused) {
       const dt = this.recorder !== null ? 1 / RECORDING_FPS : Math.min(input.dt, 0.1);
+      if (this.temperatureProbe !== null) this.evolver.setTemperature(this.temperatureProbe.value);
       const next = this.evolver.step(dt);
       if (next !== null) this.setProject(next);
     }
@@ -1140,6 +1145,13 @@ export class Orchestrator implements CommandBus {
     // is the same guarantee.
     this.system.recordPick(encoder);
 
+    // TEMPERATURE: a small sampled readback of particle velocities, once a
+    // second, so the evolver and the log know when the run has gone still.
+    this.temperatureProbe ??= new TemperatureProbe(this.device);
+    if (!this.paused) {
+      this.temperatureProbe.record(encoder, this.system.entityBufferForSand(), performance.now());
+    }
+
     // AFTER the loop, not before: the camera binds its own targets for every
     // sample above, so binding the swap chain any earlier would be undone.
     this.assembler.present(
@@ -1262,6 +1274,7 @@ export class Orchestrator implements CommandBus {
     resolveTimedFrame(encoder);
     this.device.queue.submit([encoder.finish()]);
     afterTimedSubmit();
+    this.temperatureProbe.afterSubmit(performance.now());
 
     // AFTER submit, and it has to be: `mapAsync` may not be called while the
     // encoder that writes the buffer is still open. It resolves on a later
@@ -2193,9 +2206,14 @@ export class Orchestrator implements CommandBus {
       world[k] = typeof v === 'number' ? r4(v) : v;
     }
     const ev = this.evolver.view();
+    const temp = this.temperatureProbe?.value;
     return {
       name: this.project.name,
       paused: this.paused,
+      temp:
+        temp === undefined
+          ? undefined
+          : { speed: Number(temp.speed.toPrecision(4)), rel: r4(temp.relative), cold: temp.cold },
       evolving: this.evolver.running,
       morphing: this.morph.playing,
       evolve: this.evolver.running

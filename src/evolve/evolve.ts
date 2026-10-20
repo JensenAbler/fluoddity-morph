@@ -167,6 +167,12 @@ export interface EvolveSettings {
   focusSeconds: number;
   /** Seconds for the target point to glide from one favorite to the other. */
   strideSeconds: number;
+  /**
+   * Seconds for colors to settle on a new favorite's palette. Color follows
+   * the FOCUS favorite on this slow clock, not the moving line -- the log had
+   * "worn out from how fast and often the color changes".
+   */
+  colorSeconds: number;
 }
 
 export const DEFAULT_SETTINGS: EvolveSettings = {
@@ -185,7 +191,13 @@ export const DEFAULT_SETTINGS: EvolveSettings = {
   exploration: 0.6,
   focusSeconds: 45,
   strideSeconds: 25,
+  colorSeconds: 240,
 };
+
+/** While cold, the target point moves this many times faster -- out of the freeze. */
+const COLD_SPEEDUP = 3;
+/** Cold this long and the drift turns around, back toward where it was alive. */
+const COLD_TURN_SECONDS = 8;
 
 /** The phase-field arrangement: rule glacial, sensors slow, forces medium, color fast. */
 export function layeredRanks(): number[] {
@@ -298,6 +310,9 @@ export function ruleDistance(
 
 export interface EvolveView {
   readonly running: boolean;
+  /** Measured motion relative to this run's recent peak, and whether it is cold. */
+  readonly temperature: number;
+  readonly cold: boolean;
   readonly attractors: readonly { key: number; name: string; likes: number }[];
   /** The favorite the drift is currently centred on. */
   readonly focusKey: number;
@@ -328,6 +343,10 @@ export class Evolver {
   private w = 0;
   private direction = 1;
   private lastSpread: number[] = [];
+  /** Measured motion, from the Orchestrator's temperature probe. */
+  private temperature = { relative: 1, cold: false, coldFor: 0 };
+  /** Whether this cold spell has already turned the drift around. */
+  private turnedThisSpell = false;
   readonly settings: EvolveSettings = { ...DEFAULT_SETTINGS };
   ranks: number[] = layeredRanks();
   running = false;
@@ -460,8 +479,20 @@ export class Evolver {
     return gene.fields.map((spec) => this.settings.settingWander * (spec.hi - spec.lo) * n);
   }
 
+  /** Feed in the latest measured temperature (see `telemetry/temperature.ts`). */
+  setTemperature(t: { relative: number; cold: boolean; coldFor: number }): void {
+    this.temperature = { relative: t.relative, cold: t.cold, coldFor: t.coldFor };
+    if (!t.cold) this.turnedThisSpell = false;
+  }
+
   /** Where gene `i` is being pulled right now. */
   private targetOf(i: number, g: GeneState): number[] {
+    // COLOR follows the focus favorite alone, not the line between two.
+    if (GENES[i]!.family === 'color' && this.focus !== null) {
+      const t = geneOf(this.focus.project, i).map((v, k) => v + (g.offset[k] ?? 0));
+      clampGene(i, t);
+      return t;
+    }
     const pair = g.own ?? this.pair;
     if (pair === null) return g.x;
     const ga = geneOf(pair.a.project, i);
@@ -543,8 +574,16 @@ export class Evolver {
     // has moved on, or by chance -- sets off along a new line.
     const { lo, hi } = this.span();
     if (this.pair === null) this.newLine(spread);
+    // COLD: the particles have gone still. Hurry through rather than linger,
+    // and if it stays cold, turn back toward where it was alive.
+    const cold = this.temperature.cold;
+    if (cold && this.temperature.coldFor > COLD_TURN_SECONDS && !this.turnedThisSpell) {
+      this.direction = -this.direction;
+      this.turnedThisSpell = true;
+    }
+    const pace = cold ? COLD_SPEEDUP : 1;
     if (hi > lo) {
-      this.w += (this.direction * (hi - lo) * dt) / Math.max(1, s.strideSeconds);
+      this.w += (pace * this.direction * (hi - lo) * dt) / Math.max(1, s.strideSeconds);
       if (this.w > hi || this.w < lo) {
         if (focusChanged || this.rng() < 0.5) {
           const reached = this.pair === null ? undefined : this.direction > 0 ? this.pair.b : this.pair.a;
@@ -569,7 +608,10 @@ export class Evolver {
         g.offset[k] = g.offset[k]! + ((g.offsetGoal[k] ?? 0) - g.offset[k]!) * ease;
       }
       const target = this.targetOf(i, g);
-      const omega = 3 / durationFor(this.rankOf(i), s);
+      const omega =
+        GENES[i]!.family === 'color'
+          ? 3 / Math.max(5, s.colorSeconds)
+          : (3 / durationFor(this.rankOf(i), s)) * (cold ? COLD_SPEEDUP : 1);
       const steps = Math.max(1, Math.ceil((omega * dt) / 0.2));
       const h = dt / steps;
       for (let n = 0; n < steps; n++) {
@@ -643,6 +685,8 @@ export class Evolver {
   view(): EvolveView {
     return {
       running: this.running,
+      temperature: this.temperature.relative,
+      cold: this.temperature.cold,
       ready: this.ready,
       attractors: this.pool.map(({ key, name, likes }) => ({ key, name, likes })),
       focusKey: this.focus?.key ?? -1,

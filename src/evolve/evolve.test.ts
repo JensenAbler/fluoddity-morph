@@ -249,3 +249,28 @@ test('physics settings travel together: drag and force stay on the line between 
     assert.ok(Math.abs(td - tf) < 1e-6, `drag at ${td.toFixed(3)} of the way, force at ${tf.toFixed(3)}`);
   }
 });
+
+test('cold: the drift hurries, then turns back toward where it was alive', () => {
+  const ev = new Evolver(seeded(41));
+  ev.setPool([
+    { name: 'a', project: project(0), likes: 1 },
+    { name: 'b', project: project(1), likes: 1 },
+  ]);
+  ev.settings.exploration = 0.5;
+  ev.start(project(0));
+  for (let i = 0; i < 20; i++) ev.step(0.1);
+  const w0 = ev.debug().w;
+  ev.step(1);
+  const warmStep = ev.debug().w - w0;
+  ev.setTemperature({ relative: 0.05, cold: true, coldFor: 1 });
+  const w1 = ev.debug().w;
+  ev.step(1);
+  const coldStep = ev.debug().w - w1;
+  assert.ok(Math.abs(coldStep) > Math.abs(warmStep) * 2.5, `${coldStep} vs ${warmStep}`);
+  const dir = ev.debug().dir;
+  ev.setTemperature({ relative: 0.05, cold: true, coldFor: 9 });
+  ev.step(0.1);
+  assert.equal(ev.debug().dir, -dir);
+  ev.step(0.1);
+  assert.equal(ev.debug().dir, -dir, 'turns once per cold spell, not every frame');
+});

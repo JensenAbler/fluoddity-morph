@@ -49,6 +49,7 @@ const SPEED_SLIDERS: readonly SliderSpec[] = [
   { key: 'minSeconds', label: 'fastest', min: 1, max: 60, step: 1, unit: 's', title: 'Seconds for the quickest gene to reach a new target' },
   { key: 'maxSeconds', label: 'slowest', min: 10, max: 600, step: 5, unit: 's', title: 'Seconds for the slowest gene' },
   { key: 'skew', label: 'skew', min: -1, max: 1, step: 0.05, title: 'Left crowds genes toward fast, right toward slow' },
+  { key: 'colorSeconds', label: 'color pace', min: 30, max: 900, step: 10, unit: 's', title: 'Seconds for colors to settle on a new favorite. Higher = calmer color' },
   { key: 'fluidSeconds', label: 'fluidity', min: 20, max: 900, step: 10, unit: 's', title: 'Fluid mode: how long a gene takes to change speed. Lower = the distribution morphs faster' },
 ];
 
@@ -324,7 +325,7 @@ export class EvolveTab {
       ? 'Preparing attractors…'
       : !ev.running
         ? `${String(ev.attractors.length)} attractors · ♥ adds what you see`
-        : `Drifting · focus: ${ev.focusName}${near}`;
+        : `${ev.cold ? '❄ cold, hurrying through' : `Drifting · ${Math.round(ev.temperature * 100)}% warm`} · focus: ${ev.focusName}${near}`;
 
     const running = ev.running ? '1' : '0';
     if (this.startButton.dataset['running'] !== running) {
