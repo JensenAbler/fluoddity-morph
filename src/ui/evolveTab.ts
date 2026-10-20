@@ -30,8 +30,7 @@ const SECTION = 'margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,2
 
 const FAMILY_COLORS: Record<GeneFamily, string> = {
   rule: '#a78bfa',
-  sensor: '#22d3ee',
-  force: '#f4d03f',
+  physics: '#22d3ee',
   color: '#f472b6',
   trail: '#86efac',
 };
@@ -164,8 +163,7 @@ export class EvolveTab {
     legend.style.cssText = MUTED + 'display:flex;gap:10px;flex-wrap:wrap;font-size:0.85em;';
     for (const [family, label] of [
       ['rule', 'rule'],
-      ['sensor', 'sensor'],
-      ['force', 'force'],
+      ['physics', 'physics'],
       ['trail', 'trail'],
       ['color', 'color'],
     ] as const) {

@@ -70,14 +70,65 @@ export const SCALARS: readonly ScalarSpec[] = [
   { field: 'trailDiffusion', source: 'world', lo: 0, hi: 1, label: 'diffuse', family: 'trail' },
 ];
 
-export const GENE_COUNT = RULE_GENES + SCALARS.length;
+export type GeneFamily = 'rule' | 'physics' | 'color' | 'trail';
 
-export type GeneFamily = 'rule' | ScalarSpec['family'];
+/**
+ * One gene: something that moves on ONE clock. Either a rule Fourier center
+ * (8 floats) or a group of settings.
+ *
+ * THE PHYSICS SETTINGS ARE ONE GENE. The log showed the freezes: gain and drag
+ * raced toward Pebbles (which keeps little velocity and makes up for it with a
+ * big force) while force -- on a slower clock -- was still near Indigo's small
+ * value. Sensor, force and drag only work in the combinations real creatures
+ * use them, so they now travel together, staying on the line between two
+ * working presets instead of mixing one preset's drag with another's force.
+ */
+interface GeneDef {
+  readonly label: string;
+  readonly family: GeneFamily;
+  /** Index of the first rule float, for a rule gene. */
+  readonly ruleStart: number | null;
+  /** The settings this gene carries, for a settings gene. */
+  readonly fields: readonly ScalarSpec[];
+}
+
+const field = (name: string): ScalarSpec => SCALARS.find((x) => x.field === name)!;
+
+export const GENES: readonly GeneDef[] = [
+  ...Array.from({ length: RULE_GENES }, (_, i) => ({
+    label: `rule ${i + 1}`,
+    family: 'rule' as const,
+    ruleStart: i * FLOATS_PER_CENTER,
+    fields: [],
+  })),
+  {
+    label: 'physics',
+    family: 'physics',
+    ruleStart: null,
+    fields: SCALARS.filter((x) => x.family === 'sensor' || x.family === 'force'),
+  },
+  { label: 'hue amt', family: 'color', ruleStart: null, fields: [field('colorSensitivity')] },
+  { label: 'hue', family: 'color', ruleStart: null, fields: [field('colorOffset')] },
+  { label: 'persist', family: 'trail', ruleStart: null, fields: [field('trailPersistence')] },
+  { label: 'diffuse', family: 'trail', ruleStart: null, fields: [field('trailDiffusion')] },
+];
+
+export const GENE_COUNT = GENES.length;
+
 export function geneFamily(i: number): GeneFamily {
-  return i < RULE_GENES ? 'rule' : SCALARS[i - RULE_GENES]!.family;
+  return GENES[i]!.family;
 }
 export function geneLabel(i: number): string {
-  return i < RULE_GENES ? `rule ${i + 1}` : SCALARS[i - RULE_GENES]!.label;
+  return GENES[i]!.label;
+}
+
+/** Read a setting from the config or the world. */
+function readField(project: Project, spec: ScalarSpec): number {
+  const record = (spec.source === 'config' ? project.configs[0]! : project.world) as unknown as Record<
+    string,
+    number
+  >;
+  return record[spec.field] ?? 0;
 }
 
 export interface Attractor {
@@ -126,7 +177,9 @@ export const DEFAULT_SETTINGS: EvolveSettings = {
   skew: 0,
   mode: 'fluid',
   fluidSeconds: 120,
-  coherence: 0.85,
+  // 1: every gene follows the shared line. The log read lower values as
+  // mosaics that never commit; recombination is still a slider away.
+  coherence: 1,
   ruleWander: 0.1,
   settingWander: 0.03,
   exploration: 0.6,
@@ -138,9 +191,8 @@ export const DEFAULT_SETTINGS: EvolveSettings = {
 export function layeredRanks(): number[] {
   const byFamily: Record<GeneFamily, number> = {
     rule: 0.7,
-    sensor: 0.55,
+    physics: 0.55,
     trail: 0.6,
-    force: 0.45,
     color: 0.9,
   };
   return Array.from({ length: GENE_COUNT }, (_, i) => byFamily[geneFamily(i)]);
@@ -159,19 +211,25 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
 }
 
-/** A gene's value as a flat vector (8 floats for a rule center, 1 for a setting). */
+/** A gene's value as a flat vector (8 floats for a rule center, one per setting otherwise). */
 export function geneOf(project: Project, i: number): number[] {
-  const config = project.configs[0]!;
-  if (i < RULE_GENES) {
-    const start = i * FLOATS_PER_CENTER;
-    return config.rule.slice(start, start + FLOATS_PER_CENTER).map((v) => v ?? 0);
+  const gene = GENES[i]!;
+  if (gene.ruleStart !== null) {
+    const start = gene.ruleStart;
+    return project.configs[0]!.rule.slice(start, start + FLOATS_PER_CENTER).map((v) => v ?? 0);
   }
-  const spec = SCALARS[i - RULE_GENES]!;
-  const record = (spec.source === 'config' ? config : project.world) as unknown as Record<
-    string,
-    number
-  >;
-  return [record[spec.field] ?? 0];
+  return gene.fields.map((spec) => readField(project, spec));
+}
+
+/** Clamp each component of a settings gene to its slider range. */
+function clampGene(i: number, x: number[], v?: number[]): void {
+  const gene = GENES[i]!;
+  gene.fields.forEach((spec, k) => {
+    if (x[k]! < spec.lo || x[k]! > spec.hi) {
+      x[k] = clamp(x[k]!, spec.lo, spec.hi);
+      if (v !== undefined) v[k] = 0;
+    }
+  });
 }
 
 /**
@@ -209,8 +267,12 @@ interface GeneState {
   x: number[];
   /** How fast it is moving (units per second) -- carried through every retarget. */
   v: number[];
-  /** A fixed wander offset for the current line, so jitter is a place, not noise. */
+  /**
+   * The wander offset, eased toward `offsetGoal` (re-rolled per line) so a
+   * new line never makes the target jump.
+   */
   offset: number[];
+  offsetGoal: number[];
   /** The pair this gene follows, when it is not following the shared one. */
   own: { a: Attractor; b: Attractor } | null;
 }
@@ -379,19 +441,23 @@ export class Evolver {
               const oa = pickAttractor(this.pool, this.rng) ?? a;
               return { a: oa, b: this.otherThan(oa) };
             })();
-      g.offset = this.offsetFor(i, spread);
+      g.offsetGoal = this.offsetFor(i, spread);
     });
   }
 
   private offsetFor(i: number, spread: readonly number[]): number[] {
-    if (i < RULE_GENES) {
+    const gene = GENES[i]!;
+    if (gene.ruleStart !== null) {
+      const start = gene.ruleStart;
       return Array.from(
         { length: FLOATS_PER_CENTER },
-        (_, k) => this.settings.ruleWander * spread[i * FLOATS_PER_CENTER + k]! * gaussian(this.rng),
+        (_, k) => this.settings.ruleWander * spread[start + k]! * gaussian(this.rng),
       );
     }
-    const spec = SCALARS[i - RULE_GENES]!;
-    return [this.settings.settingWander * (spec.hi - spec.lo) * gaussian(this.rng)];
+    // One draw for the whole group, scaled per setting: the group shifts as a
+    // piece rather than each setting jittering its own way.
+    const n = gaussian(this.rng);
+    return gene.fields.map((spec) => this.settings.settingWander * (spec.hi - spec.lo) * n);
   }
 
   /** Where gene `i` is being pulled right now. */
@@ -404,12 +470,9 @@ export class Evolver {
     // within the range the two favorites actually use: extrapolating drag or
     // force past a preset's value is how the particles were driven into a dead
     // stop (drag toward 0 keeps no velocity; force toward 0 pushes nothing).
-    const w = i < RULE_GENES ? this.w : clamp(this.w, 0, 1);
+    const w = GENES[i]!.ruleStart !== null ? this.w : clamp(this.w, 0, 1);
     const t = ga.map((v, k) => v + w * (gb[k]! - v) + (g.offset[k] ?? 0));
-    if (i >= RULE_GENES) {
-      const spec = SCALARS[i - RULE_GENES]!;
-      t[0] = clamp(t[0]!, spec.lo, spec.hi);
-    }
+    clampGene(i, t);
     return t;
   }
 
@@ -426,7 +489,7 @@ export class Evolver {
     this.base = origin;
     this.genes = Array.from({ length: GENE_COUNT }, (_, i) => {
       const x = geneOf(origin, i);
-      return { x, v: x.map(() => 0), offset: x.map(() => 0), own: null };
+      return { x, v: x.map(() => 0), offset: x.map(() => 0), offsetGoal: x.map(() => 0), own: null };
     });
     this.focus = null;
     this.nextFocus();
@@ -499,7 +562,12 @@ export class Evolver {
     // EVERY GENE IS A SPRING chasing the point. Critically damped, so a still
     // target is reached without overshoot; velocity carries through every move
     // of the target, so the creature never stops to think.
+    // Offsets glide toward their goals over about half a stride.
+    const ease = 1 - Math.exp(-dt / Math.max(0.5, s.strideSeconds * 0.5));
     this.genes.forEach((g, i) => {
+      for (let k = 0; k < g.offset.length; k++) {
+        g.offset[k] = g.offset[k]! + ((g.offsetGoal[k] ?? 0) - g.offset[k]!) * ease;
+      }
       const target = this.targetOf(i, g);
       const omega = 3 / durationFor(this.rankOf(i), s);
       const steps = Math.max(1, Math.ceil((omega * dt) / 0.2));
@@ -511,13 +579,7 @@ export class Evolver {
           g.x[k] = g.x[k]! + g.v[k]! * h;
         }
       }
-      if (i >= RULE_GENES) {
-        const spec = SCALARS[i - RULE_GENES]!;
-        if (g.x[0]! < spec.lo || g.x[0]! > spec.hi) {
-          g.x[0] = clamp(g.x[0]!, spec.lo, spec.hi);
-          g.v[0] = 0;
-        }
-      }
+      clampGene(i, g.x, g.v);
     });
     return this.current();
   }
@@ -530,14 +592,16 @@ export class Evolver {
     const config: Record<string, unknown> = { ...baseConfig };
     const world: Record<string, unknown> = { ...this.base.world };
     this.genes.forEach((g, i) => {
-      const value = g.x;
-      if (i < RULE_GENES) {
-        value.forEach((v, k) => {
-          rule[i * FLOATS_PER_CENTER + k] = v;
+      const gene = GENES[i]!;
+      if (gene.ruleStart !== null) {
+        const start = gene.ruleStart;
+        g.x.forEach((v, k) => {
+          rule[start + k] = v;
         });
       } else {
-        const spec = SCALARS[i - RULE_GENES]!;
-        (spec.source === 'config' ? config : world)[spec.field] = value[0]!;
+        gene.fields.forEach((spec, k) => {
+          (spec.source === 'config' ? config : world)[spec.field] = g.x[k]!;
+        });
       }
     });
     config['rule'] = rule;
@@ -589,8 +653,14 @@ export class Evolver {
       progress:
         this.genes.length === GENE_COUNT
           ? this.genes.map((g, i) => {
-              const speed = Math.sqrt(g.v.reduce((acc, v) => acc + v * v, 0));
-              const scale = i < RULE_GENES ? 1 : SCALARS[i - RULE_GENES]!.hi - SCALARS[i - RULE_GENES]!.lo;
+              const gene = GENES[i]!;
+              const speed = Math.sqrt(
+                g.v.reduce((acc, v, k) => {
+                  const range = gene.ruleStart !== null ? 1 : gene.fields[k]!.hi - gene.fields[k]!.lo;
+                  return acc + (v / range) ** 2;
+                }, 0),
+              );
+              const scale = 1;
               return clamp((speed * durationFor(this.rankOf(i), this.settings)) / scale, 0, 1);
             })
           : [],

@@ -216,3 +216,36 @@ test('physics settings never extrapolate past the favorites', () => {
     assert.ok(gain >= 0.4 - 0.05 && gain <= 6 + 0.05, `gain ${gain}`);
   }
 });
+
+test('physics settings travel together: drag and force stay on the line between presets', () => {
+  const mk = (drag: number, force: number) =>
+    makeProject({
+      configs: [
+        makeSimulationConfig(
+          {
+            cohorts: 1, mutationSeed: 0.5, sensorGain: 1, sensorAngle: 0.1, sensorDistance: 1.5,
+            mutationScale: 0, globalForceMult: force, drag, strafePower: 0.2, axialForce: 0.3,
+            lateralForce: -0.5, hazardRate: 0,
+          },
+          { rule: Array.from({ length: 80 }, () => 0.5) },
+        ),
+      ],
+      world: makeWorldSettings(),
+    });
+  const a = mk(0.5, 0.15);
+  const b = mk(0.125, 0.94);
+  const ev = new Evolver(seeded(23));
+  ev.setPool([
+    { name: 'a', project: a, likes: 1 },
+    { name: 'b', project: b, likes: 1 },
+  ]);
+  ev.settings.settingWander = 0;
+  ev.settings.mode = 'fluid';
+  ev.start(a);
+  for (let i = 0; i < 1500; i++) {
+    const c = ev.step(0.2)!.configs[0]!;
+    const td = (c.drag - 0.5) / (0.125 - 0.5);
+    const tf = (c.globalForceMult - 0.15) / (0.94 - 0.15);
+    assert.ok(Math.abs(td - tf) < 1e-6, `drag at ${td.toFixed(3)} of the way, force at ${tf.toFixed(3)}`);
+  }
+});

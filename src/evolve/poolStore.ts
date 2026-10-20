@@ -15,7 +15,8 @@ import { type Project, makeProject } from '../project/project.ts';
 // category and the presets), and evolving is a continuous drift. Bumping the
 // key re-seeds once, so a pool stored by the old rules (sometimes a single
 // attractor) does not linger.
-const KEY = 'fluoddity-morph.attractors.v2';
+// v3: static presets now seed muted (see SEED_LIKES), so re-seed once.
+const KEY = 'fluoddity-morph.attractors.v3';
 
 export interface StoredAttractor {
   readonly name: string;

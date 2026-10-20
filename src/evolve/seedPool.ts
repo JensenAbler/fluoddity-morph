@@ -1,10 +1,23 @@
 /**
  * Starting like counts for attractors seeded from the save library, keyed by
  * save name (lowercased, dashes and underscores read as spaces). Anything not
- * listed starts with 1 like. Jensen asked for Indigo Flame Society at 3.
+ * listed starts with 1 like. Jensen asked for Indigo Flame Society at 3; 0
+ * mutes (kept in the list, never visited).
  */
 export const SEED_LIKES: Readonly<Record<string, number>> = {
   'indigo flame society': 3,
+  // MUTED (♥0) after the first telemetry session: Jensen's freeze notes ("0
+  // kelvin", "solid hue", "motion died") clustered where the drift reached
+  // these presets, which are crystalline / static by design. Blends toward
+  // them read as freezing. Unmute from the Evolve tab with +.
+  crystal: 0,
+  crystal2: 0,
+  pseudocrystal: 0,
+  tangle: 0,
+  tension: 0,
+  weave: 0,
+  medley: 0,
+  medusa: 0,
 };
 
 /**
