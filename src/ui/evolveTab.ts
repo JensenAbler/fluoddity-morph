@@ -110,6 +110,23 @@ export class EvolveTab {
     restart.title = 'Reset the particles when evolving starts';
     transport.append(this.startButton, this.likeButton, restart);
 
+    // --- marks: verdicts for the server log --------------------------------
+    const marks = document.createElement('div');
+    marks.style.cssText = 'display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap;';
+    const marksLabel = document.createElement('span');
+    marksLabel.textContent = 'Mark this moment:';
+    marksLabel.style.cssText = MUTED;
+    const up = this.button('👍', ICON + 'font-size:1.1em;', () => send({ kind: 'logMark', mark: 'up' }));
+    up.title = 'Log: this is good (Y)';
+    const down = this.button('👎', ICON + 'font-size:1.1em;', () => send({ kind: 'logMark', mark: 'down' }));
+    down.title = 'Log: this is bad (N)';
+    const note = this.button('📝', ICON + 'font-size:1.1em;', () => {
+      const text = window.prompt('What are you seeing?');
+      if (text !== null && text.trim() !== '') send({ kind: 'logMark', mark: 'note', note: text });
+    });
+    note.title = 'Log a description of what is happening right now';
+    marks.append(marksLabel, up, down, note);
+
     // --- speeds ---------------------------------------------------------------
     const speeds = document.createElement('div');
     speeds.style.cssText = SECTION;
@@ -188,7 +205,7 @@ export class EvolveTab {
     this.list.style.cssText = 'margin-top:4px;';
     pool.append(poolHead, this.list);
 
-    host.append(this.status, transport, speeds, leash, pool);
+    host.append(this.status, transport, marks, speeds, leash, pool);
     if (mobile) host.style.fontSize = '14px';
   }
 

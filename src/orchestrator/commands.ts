@@ -534,7 +534,9 @@ export type Command =
   | { readonly kind: 'evolveShuffleSpeeds' }
   | { readonly kind: 'evolveLayeredSpeeds' }
   /** Forget the stored pool and re-seed it from the save library. */
-  | { readonly kind: 'evolveResetPool' };
+  | { readonly kind: 'evolveResetPool' }
+  /** 👍 / 👎 / 📝: log a verdict on what is on screen, with a full snapshot. */
+  | { readonly kind: 'logMark'; readonly mark: 'up' | 'down' | 'note'; readonly note?: string };
 
 /** Every `Command`'s `kind`, for exhaustiveness assertions in tests. */
 export type CommandKind = Command['kind'];

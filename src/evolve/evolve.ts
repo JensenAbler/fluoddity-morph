@@ -565,6 +565,17 @@ export class Evolver {
     return best;
   }
 
+  /** The drift's internal position, for the telemetry log. */
+  debug(): { a: string; b: string; w: number; dir: number; focus: string } {
+    return {
+      a: this.pair?.a.name ?? '',
+      b: this.pair?.b.name ?? '',
+      w: this.w,
+      dir: this.direction,
+      focus: this.focus?.name ?? '',
+    };
+  }
+
   view(): EvolveView {
     return {
       running: this.running,

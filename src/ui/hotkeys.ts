@@ -211,6 +211,9 @@ export const DEFAULT_HOTKEYS: readonly Hotkey[] = [
   // Like: add what is on screen to the auto-evolve attractors. A Command,
   // since the attractor pool is the Orchestrator's.
   { code: 'KeyL', command: { kind: 'evolveLike' } },
+  // 👍 / 👎: log a verdict on what is on screen (telemetry marks).
+  { code: 'KeyY', command: { kind: 'logMark', mark: 'up' } },
+  { code: 'KeyN', command: { kind: 'logMark', mark: 'down' } },
   // `local`, not a `Command`, for the reason `toggleUi` is: the clipboard is
   // the browser's and the Orchestrator has no DOM in it at all. It hands over a
   // document when asked (`CommandBus.projectDocument`) and never learns that a

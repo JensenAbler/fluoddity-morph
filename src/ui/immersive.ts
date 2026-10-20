@@ -23,7 +23,7 @@ const CLASS = 'fm-immersive';
 const IDLE_MS = 2500;
 
 const STYLE = `
-body.${CLASS} > *:not(canvas):not([data-immersive-exit]) { display: none !important; }
+body.${CLASS} > *:not(canvas):not([data-immersive-exit]):not([data-immersive-marks]) { display: none !important; }
 [data-immersive-exit] {
   position: fixed; z-index: 1000; display: none;
   right: calc(env(safe-area-inset-right, 0px) + 12px);
@@ -36,6 +36,19 @@ body.${CLASS} > *:not(canvas):not([data-immersive-exit]) { display: none !import
 }
 body.${CLASS} [data-immersive-exit] { display: flex; }
 [data-immersive-exit].fm-idle { opacity: 0; }
+[data-immersive-marks] {
+  position: fixed; z-index: 1000; display: none; gap: 8px;
+  right: calc(env(safe-area-inset-right, 0px) + 62px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
+  transition: opacity 400ms ease; opacity: 1;
+}
+[data-immersive-marks] button {
+  width: 40px; height: 40px; border-radius: 20px; padding: 0; font-size: 18px;
+  background: rgba(28,28,30,0.55); border: 1px solid rgba(255,255,255,0.18);
+  color: #e8e8ea; cursor: pointer; touch-action: manipulation;
+}
+body.${CLASS} [data-immersive-marks] { display: flex; }
+[data-immersive-marks].fm-idle { opacity: 0; }
 `;
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -66,6 +79,16 @@ export function cornersIcon(outward = true, size = 16): SVGSVGElement {
 export class Immersive {
   private active = false;
   private exitButton: HTMLButtonElement | null = null;
+  private marks: HTMLElement | null = null;
+  private onMark: ((mark: 'up' | 'down' | 'note', note?: string) => void) | null = null;
+
+  /**
+   * Show 👍 / 👎 / 📝 beside the exit button while immersed, so a verdict can
+   * be logged without bringing the UI back. See `telemetry/telemetry.ts`.
+   */
+  setMarkHandler(handler: (mark: 'up' | 'down' | 'note', note?: string) => void): void {
+    this.onMark = handler;
+  }
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly onActivity = (): void => this.wake();
   private readonly onKey = (e: KeyboardEvent): void => {
@@ -140,14 +163,21 @@ export class Immersive {
     this.exit();
     this.exitButton?.remove();
     this.exitButton = null;
+    this.marks?.remove();
+    this.marks = null;
   }
 
   private wake(): void {
     const b = this.exitButton;
     if (b === null) return;
+    const m = this.marks;
     b.classList.remove('fm-idle');
+    m?.classList.remove('fm-idle');
     if (this.idleTimer !== null) clearTimeout(this.idleTimer);
-    this.idleTimer = setTimeout(() => b.classList.add('fm-idle'), IDLE_MS);
+    this.idleTimer = setTimeout(() => {
+      b.classList.add('fm-idle');
+      m?.classList.add('fm-idle');
+    }, IDLE_MS);
   }
 
   private ensureBuilt(): void {
@@ -170,5 +200,34 @@ export class Immersive {
     });
     document.body.append(b);
     this.exitButton = b;
+
+    if (this.onMark !== null) {
+      const marks = document.createElement('div');
+      marks.dataset['immersiveMarks'] = '';
+      for (const [mark, glyph, label] of [
+        ['up', '👍', 'This is good'],
+        ['down', '👎', 'This is bad'],
+        ['note', '📝', 'Describe what you see'],
+      ] as const) {
+        const mb = document.createElement('button');
+        mb.type = 'button';
+        mb.textContent = glyph;
+        mb.title = label;
+        mb.setAttribute('aria-label', label);
+        mb.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (mark === 'note') {
+            const note = window.prompt('What are you seeing?');
+            if (note !== null && note.trim() !== '') this.onMark?.('note', note);
+          } else {
+            this.onMark?.(mark);
+          }
+          this.wake();
+        });
+        marks.append(mb);
+      }
+      document.body.append(marks);
+      this.marks = marks;
+    }
   }
 }

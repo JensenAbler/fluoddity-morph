@@ -160,6 +160,7 @@ import {
 import { type Checkpoint, CheckpointStore } from './clipboardCommands.ts';
 import { MorphTimeline, startOf } from '../morph/morph.ts';
 import { Evolver } from '../evolve/evolve.ts';
+import { Telemetry, r4 } from '../telemetry/telemetry.ts';
 import { HOME_CATEGORY, SEED_LIKES } from '../evolve/seedPool.ts';
 import { clearPool, loadPool, savePool } from '../evolve/poolStore.ts';
 import { type GpuDeriver, createGpuDeriver } from '../archive/gpuDeriver.ts';
@@ -377,6 +378,9 @@ export class Orchestrator implements CommandBus {
 
   /** Counts likes this session, for naming them. */
   private likeSerial = 0;
+
+  /** Samples and 👍/👎 marks to the server log. See `telemetry/telemetry.ts`. */
+  private readonly telemetry = new Telemetry();
 
   /**
    * Project state from before a hover-preview began, so a committed load
@@ -898,6 +902,11 @@ export class Orchestrator implements CommandBus {
       const next = this.evolver.step(dt);
       if (next !== null) this.setProject(next);
     }
+    this.telemetry.tick(
+      performance.now(),
+      (this.evolver.running || this.morph.playing) && !this.paused,
+      () => this.snapshot(),
+    );
 
     // PICKING IS DELIBERATELY NOT RUN PER FRAME. A pick dispatches over every
     // entity, which measured in the tens of milliseconds per frame at large
@@ -2166,12 +2175,52 @@ export class Orchestrator implements CommandBus {
     savePool(this.evolver.attractors);
   }
 
+  /**
+   * Everything the log needs to tie a moment to its parameters: the live
+   * config's settings and rule, the world, and where the evolver is.
+   */
+  private snapshot(): Record<string, unknown> {
+    const c = this.project.configs[0];
+    const settings: Record<string, unknown> = {};
+    if (c !== undefined) {
+      for (const [k, v] of Object.entries(c)) {
+        if (k === 'rule') continue;
+        settings[k] = typeof v === 'number' ? r4(v) : v;
+      }
+    }
+    const world: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(this.project.world)) {
+      world[k] = typeof v === 'number' ? r4(v) : v;
+    }
+    const ev = this.evolver.view();
+    return {
+      name: this.project.name,
+      paused: this.paused,
+      evolving: this.evolver.running,
+      morphing: this.morph.playing,
+      evolve: this.evolver.running
+        ? {
+            ...this.evolver.debug(),
+            w: r4(this.evolver.debug().w),
+            nearest: ev.nearestName,
+            nearestDist: r4(ev.nearestDistance),
+          }
+        : undefined,
+      settings,
+      world,
+      rule: c === undefined ? [] : c.rule.map(r4),
+    };
+  }
+
   /** Stop evolve and morph playback, saying so if either was running. */
   private stopAutomation(): void {
     const was = this.evolver.running ? 'Evolve' : this.morph.playing ? 'Morph playback' : null;
     this.evolver.stop();
     this.morph.stop();
-    if (was !== null) this.notify(`${was} stopped`);
+    if (was !== null) {
+      this.notify(`${was} stopped`);
+      this.telemetry.event('automationStopped', { what: was });
+    }
   }
 
   private setProject(project: Project): void {
@@ -3131,6 +3180,7 @@ export class Orchestrator implements CommandBus {
           .then((baked) => {
             if (!this.evolver.start(baked)) return;
             this.notify(`Evolving -- becoming ${this.evolver.view().focusName}`);
+            this.telemetry.event('evolveStart', { settings: { ...this.evolver.settings } });
             if (command.restart === true) {
               this.clearHighlight();
               this.system.reset();
@@ -3139,6 +3189,7 @@ export class Orchestrator implements CommandBus {
         return;
       }
       case 'evolveStop':
+        if (this.evolver.running) this.telemetry.event('evolveStop');
         this.evolver.stop();
         return;
       case 'evolveLike': {
@@ -3188,6 +3239,15 @@ export class Orchestrator implements CommandBus {
         clearPool();
         void this.initPool();
         return;
+
+      case 'logMark': {
+        const note = command.note?.trim().slice(0, 500);
+        this.telemetry.mark(command.mark, note, this.snapshot());
+        this.notify(
+          command.mark === 'up' ? '👍 marked' : command.mark === 'down' ? '👎 marked' : '📝 noted',
+        );
+        return;
+      }
 
       case 'clearStrafeField':
         // THE ONLY RESET the field has, and deliberately NOT in the undo

@@ -743,6 +743,9 @@ export class Panel {
       if (command.kind === 'resetPreferences') void this.calibrate();
     };
     this.morphPanel = new MorphPanel({ send, mobile: this.mobile });
+    this.immersive.setMarkHandler((mark, note) => {
+      send({ kind: 'logMark', mark, ...(note !== undefined ? { note } : {}) });
+    });
     this.dialogs = new Dialogs({
       send,
       onCopyShareLink: () => {
