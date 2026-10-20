@@ -6,18 +6,13 @@
  */
 export const SEED_LIKES: Readonly<Record<string, number>> = {
   'indigo flame society': 3,
-  // MUTED (♥0) after the first telemetry session: Jensen's freeze notes ("0
-  // kelvin", "solid hue", "motion died") clustered where the drift reached
-  // these presets, which are crystalline / static by design. Blends toward
-  // them read as freezing. Unmute from the Evolve tab with +.
-  crystal: 0,
-  crystal2: 0,
-  pseudocrystal: 0,
+  // MUTED (♥0): presets outside the flames' physics family that the freeze
+  // notes clustered around. The crystal-type presets that share the flames'
+  // family (Crystal, Crystal2, Pseudocrystal, Tension, Medley, Medusa) are
+  // back at 1: the drift now reaches them by blending rules within the family,
+  // not through the switched-off in-between physics that froze it before.
   tangle: 0,
-  tension: 0,
   weave: 0,
-  medley: 0,
-  medusa: 0,
 };
 
 /**

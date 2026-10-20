@@ -16,7 +16,8 @@ import { type Project, makeProject } from '../project/project.ts';
 // key re-seeds once, so a pool stored by the old rules (sometimes a single
 // attractor) does not linger.
 // v3: static presets now seed muted (see SEED_LIKES), so re-seed once.
-const KEY = 'fluoddity-morph.attractors.v3';
+// v4: crystal-family presets unmuted (physics-family drift), so re-seed once.
+const KEY = 'fluoddity-morph.attractors.v4';
 
 export interface StoredAttractor {
   readonly name: string;

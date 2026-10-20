@@ -131,6 +131,24 @@ function readField(project: Project, spec: ScalarSpec): number {
   return record[spec.field] ?? 0;
 }
 
+/**
+ * A creature's PHYSICS FAMILY: which way its sideways push and its sensors
+ * point, and whether it has a forward engine at all.
+ *
+ * Presets cluster into a few such families, and blending in a straight line
+ * between two families passes through ZERO for whatever flips sign: sensors
+ * pointing dead ahead (can't steer), no sideways push, no engine. The telemetry
+ * showed lines across families going cold 28% of the time against 9% within one
+ * -- most freezes were the drift passing through those switched-off in-between
+ * states. Within a family nothing changes sign, so a straight blend is safe.
+ */
+export function familyOf(project: Project): string {
+  const c = project.configs[0]!;
+  const sign = (v: number): string => (v > 0 ? '+' : v < 0 ? '-' : '0');
+  const engine = Math.abs(c.axialForce) >= 0.06 ? 'E' : 'e';
+  return `${sign(c.lateralForce)}${sign(c.sensorAngle)}${engine}`;
+}
+
 export interface Attractor {
   readonly key: number;
   readonly name: string;
@@ -168,6 +186,11 @@ export interface EvolveSettings {
   /** Seconds for the target point to glide from one favorite to the other. */
   strideSeconds: number;
   /**
+   * 0..1: chance that a change of focus jumps to a different physics family.
+   * Within a family the drift blends freely; a jump is deliberate and quick.
+   */
+  familyHop: number;
+  /**
    * Seconds for colors to settle on a new favorite's palette. Color follows
    * the FOCUS favorite on this slow clock, not the moving line -- the log had
    * "worn out from how fast and often the color changes".
@@ -192,7 +215,15 @@ export const DEFAULT_SETTINGS: EvolveSettings = {
   focusSeconds: 45,
   strideSeconds: 25,
   colorSeconds: 240,
+  familyHop: 0.15,
 };
+
+/**
+ * Seconds for the physics to cross from one family to another on a hop. Short
+ * on purpose: the switched-off states between families are passed THROUGH, a
+ * scene change, never lingered in. The rule keeps blending at its own pace.
+ */
+const HOP_SECONDS = 2.5;
 
 /** While cold, the target point moves this many times faster -- out of the freeze. */
 const COLD_SPEEDUP = 3;
@@ -355,6 +386,8 @@ export interface EvolveView {
   /** The favorite the drift is currently centred on. */
   readonly focusKey: number;
   readonly focusName: string;
+  /** True while the current line is a deliberate hop between physics families. */
+  readonly hopping: boolean;
   /** Nearest attractor to the live rule, and how far (in pool-spread units). */
   readonly nearestName: string;
   readonly nearestDistance: number;
@@ -378,6 +411,8 @@ export class Evolver {
   private focusClock = 0;
   /** The shared line the target point glides along, and where on it it is. */
   private pair: { a: Attractor; b: Attractor } | null = null;
+  /** True when the current line crosses physics families (a deliberate hop). */
+  private hopping = false;
   private w = 0;
   private direction = 1;
   private lastSpread: number[] = [];
@@ -464,7 +499,15 @@ export class Evolver {
     return { lo: -Math.max(0, e - 0.5), hi: Math.min(1, 2 * e) + Math.max(0, e - 0.5) };
   }
 
-  private otherThan(a: Attractor): Attractor {
+  /** Another favorite -- in `a`'s physics family when there is one to be had. */
+  private otherThan(a: Attractor, sameFamily = true): Attractor {
+    const fam = familyOf(a.project);
+    const kin = sameFamily
+      ? this.pool.filter((x) => x.key !== a.key && familyOf(x.project) === fam)
+      : [];
+    if (kin.length > 0) {
+      return pickWeighted(kin, this.rng, (x) => this.weight(x)) ?? kin[0]!;
+    }
     let b = this.pick() ?? a;
     for (let tries = 0; tries < 8 && this.pool.length > 1 && b.key === a.key; tries++) {
       b = this.pick() ?? a;
@@ -493,6 +536,7 @@ export class Evolver {
       this.w = 0;
     }
     this.pair = { a, b };
+    this.hopping = familyOf(a.project) !== familyOf(b.project);
     this.direction = 1;
     this.genes.forEach((g, i) => {
       // Low coherence: some genes follow a line of their own (recombination).
@@ -557,6 +601,13 @@ export class Evolver {
     }
     const pair = g.own ?? this.pair;
     if (pair === null) return g.x;
+    // ON A HOP, PHYSICS DOES NOT BLEND: it heads straight for the new family
+    // (and gets there in HOP_SECONDS -- see the spring below).
+    if (this.hopping && g.own === null && GENES[i]!.family === 'physics') {
+      const t = geneOf(pair.b.project, i).map((v, k) => v + (g.offset[k] ?? 0));
+      clampGene(i, t);
+      return t;
+    }
     const ga = geneOf(pair.a.project, i);
     const gb = geneOf(pair.b.project, i);
     // EXPLORATION PAST THE ENDS IS FOR THE RULE ONLY. Physics settings stay
@@ -591,13 +642,29 @@ export class Evolver {
     return true;
   }
 
-  /** Turn the drift toward another favorite (never the same one twice running). */
+  /**
+   * Turn the drift toward another favorite (never the same one twice running).
+   * Usually one in the CURRENT physics family; with chance `familyHop`, one in
+   * another -- which makes the next line a deliberate hop.
+   */
   private nextFocus(): void {
     const previous = this.focus;
-    let next = this.pick();
-    for (let tries = 0; tries < 6 && this.pool.length > 1 && next?.key === previous?.key; tries++) {
-      next = this.pick();
-    }
+    // Where the drift is now: the end of the line it is heading for, or -- at
+    // the very start -- the family of whatever was on screen.
+    const here =
+      this.pair !== null
+        ? familyOf((this.direction > 0 ? this.pair.b : this.pair.a).project)
+        : this.base !== null
+          ? familyOf(this.base)
+          : null;
+    const hop = here === null || this.rng() < this.settings.familyHop;
+    const candidates = this.pool.filter(
+      (x) => x.key !== previous?.key && (hop ? true : familyOf(x.project) === here),
+    );
+    const next =
+      candidates.length > 0
+        ? (pickWeighted(candidates, this.rng, (x) => this.weight(x)) ?? candidates[0]!)
+        : this.pick();
     this.focus = next;
     this.focusClock = 0;
   }
@@ -661,7 +728,9 @@ export class Evolver {
     if (hi > lo) {
       this.w += (pace * this.direction * (hi - lo) * dt) / Math.max(1, s.strideSeconds);
       if (this.w > hi || this.w < lo) {
-        if (focusChanged || this.rng() < 0.5) {
+        // A hop line never turns back: its physics already lives in the new
+        // family, so it always carries on from where it arrived.
+        if (focusChanged || this.hopping || this.rng() < 0.5) {
           const reached = this.pair === null ? undefined : this.direction > 0 ? this.pair.b : this.pair.a;
           this.newLine(spread, reached);
         } else {
@@ -684,10 +753,13 @@ export class Evolver {
         g.offset[k] = g.offset[k]! + ((g.offsetGoal[k] ?? 0) - g.offset[k]!) * ease;
       }
       const target = this.targetOf(i, g);
+      const family = GENES[i]!.family;
       const omega =
-        GENES[i]!.family === 'color'
+        family === 'color'
           ? 3 / Math.max(5, s.colorSeconds)
-          : (3 / durationFor(this.rankOf(i), s)) * (cold ? COLD_SPEEDUP : 1);
+          : family === 'physics' && this.hopping && g.own === null
+            ? 3 / HOP_SECONDS
+            : (3 / durationFor(this.rankOf(i), s)) * (cold ? COLD_SPEEDUP : 1);
       const steps = Math.max(1, Math.ceil((omega * dt) / 0.2));
       const h = dt / steps;
       for (let n = 0; n < steps; n++) {
@@ -748,8 +820,10 @@ export class Evolver {
   }
 
   /** The drift's internal position, for the telemetry log. */
-  debug(): { a: string; b: string; w: number; dir: number; focus: string } {
+  debug(): { a: string; b: string; w: number; dir: number; focus: string; hop: boolean; fam: string } {
     return {
+      hop: this.hopping,
+      fam: this.pair === null ? '' : `${familyOf(this.pair.a.project)}>${familyOf(this.pair.b.project)}`,
       a: this.pair?.a.name ?? '',
       b: this.pair?.b.name ?? '',
       w: this.w,
@@ -772,6 +846,7 @@ export class Evolver {
       })),
       focusKey: this.focus?.key ?? -1,
       focusName: this.focus?.name ?? '',
+      hopping: this.hopping,
       ...this.nearest(),
       ranks: this.ranks,
       // Per gene: how hard it is moving right now, as a fraction of its pace.

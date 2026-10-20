@@ -59,6 +59,7 @@ const LEASH_SLIDERS: readonly SliderSpec[] = [
   { key: 'settingWander', label: 'setting wander', min: 0, max: 0.3, step: 0.005, title: 'How far sensor/force/color/trail settings may stray, as a fraction of slider range' },
   { key: 'exploration', label: 'exploration', min: 0, max: 1, step: 0.05, title: '0: only ever your favorites. Middle: anywhere between two favorites. High: past them, into what you have not seen' },
   { key: 'focusSeconds', label: 'focus', min: 5, max: 180, step: 5, unit: 's', title: 'Seconds the drift stays centred on one favorite before turning toward another' },
+  { key: 'familyHop', label: 'family hops', min: 0, max: 1, step: 0.05, title: 'Chance that a change of focus jumps to a different physics family. Hops are quick and deliberate; between hops the drift stays within one family' },
   { key: 'strideSeconds', label: 'stride', min: 5, max: 180, step: 5, unit: 's', title: 'Seconds for the drift to travel from one favorite to the other. Longer = more committed, slower journeys' },
 ];
 
@@ -329,7 +330,7 @@ export class EvolveTab {
       ? 'Preparing attractors…'
       : !ev.running
         ? `${String(ev.attractors.length)} attractors · ♥ adds what you see`
-        : `${ev.cold ? '❄ cold, hurrying through' : `Drifting · ${Math.round(ev.temperature * 100)}% warm`} · focus: ${ev.focusName}${near}`;
+        : `${ev.cold ? '❄ cold, hurrying through' : ev.hopping ? '⇄ hopping physics family' : `Drifting · ${Math.round(ev.temperature * 100)}% warm`} · focus: ${ev.focusName}${near}`;
 
     const running = ev.running ? '1' : '0';
     if (this.startButton.dataset['running'] !== running) {

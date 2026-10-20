@@ -9,6 +9,7 @@ import {
   GENE_COUNT,
   SCALARS,
   durationFor,
+  familyOf,
   pickAttractor,
 } from './evolve.ts';
 import { SEED_LIKES } from './seedPool.ts';
@@ -303,4 +304,65 @@ test('chill: a favorite the drift keeps freezing near gets picked less', () => {
   for (let i = 0; i < 300; i++) ev.step(0.2);
   const chilled = ev.view().attractors.filter((x) => x.chill > 0);
   assert.ok(chilled.length > 0, 'some favorite was blamed for the cold');
+});
+
+function famProject(rule: number, lateral: number, angle: number, axial: number) {
+  return makeProject({
+    configs: [
+      makeSimulationConfig(
+        {
+          cohorts: 1, mutationSeed: 0.5, sensorGain: 1, sensorAngle: angle, sensorDistance: 1.5,
+          mutationScale: 0, globalForceMult: 0.2, drag: 0.5, strafePower: 0.3, axialForce: axial,
+          lateralForce: lateral, hazardRate: 0,
+        },
+        { rule: Array.from({ length: 80 }, () => rule) },
+      ),
+    ],
+    world: makeWorldSettings(),
+  });
+}
+
+test('physics families: sign pattern of sideways push and sensors, plus the engine', () => {
+  assert.equal(familyOf(famProject(0, -0.7, 0.07, 0.37)), '-+E');
+  assert.equal(familyOf(famProject(0, 0.5, -0.18, 0.12)), '+-E');
+  assert.equal(familyOf(famProject(0, -0.19, -0.13, 0.02)), '--e');
+});
+
+test('with hops off, the drift never passes through a family boundary', () => {
+  const ev = new Evolver(seeded(70));
+  ev.setPool([
+    { name: 'f1', project: famProject(0, -0.7, 0.07, 0.37), likes: 1 },
+    { name: 'f2', project: famProject(1, -0.7, 0.2, 0.37), likes: 1 },
+    { name: 'b1', project: famProject(0.5, 0.5, -0.18, 0.12), likes: 3 },
+    { name: 'b2', project: famProject(0.2, 0.5, -0.1, 0.12), likes: 3 },
+  ]);
+  ev.settings.familyHop = 0;
+  ev.settings.settingWander = 0;
+  ev.start(famProject(0.5, -0.7, 0.1, 0.37));
+  for (let i = 0; i < 4000; i++) {
+    const c = ev.step(0.25)!.configs[0]!;
+    assert.ok(c.lateralForce < -0.6 && c.sensorAngle > 0.05, `left the family: lat ${c.lateralForce} ang ${c.sensorAngle}`);
+  }
+});
+
+test('a hop crosses families quickly, without lingering in between', () => {
+  const ev = new Evolver(seeded(71));
+  ev.setPool([
+    { name: 'f1', project: famProject(0, -0.7, 0.07, 0.37), likes: 1 },
+    { name: 'b1', project: famProject(1, 0.5, -0.18, 0.12), likes: 1 },
+  ]);
+  ev.settings.familyHop = 1;
+  ev.settings.settingWander = 0;
+  ev.settings.focusSeconds = 5;
+  ev.start(famProject(0, -0.7, 0.07, 0.37));
+  let between = 0;
+  let maxRun = 0;
+  for (let i = 0; i < 4000; i++) {
+    const c = ev.step(0.1)!.configs[0]!;
+    // "In between": sideways push near zero on its way through the sign flip.
+    if (Math.abs(c.lateralForce) < 0.2) between++;
+    else between = 0;
+    maxRun = Math.max(maxRun, between);
+  }
+  assert.ok(maxRun * 0.1 < 3, `lingered ${(maxRun * 0.1).toFixed(1)}s in the switched-off zone`);
 });
