@@ -76,7 +76,7 @@ test('the rule stays on its leash: always near some attractor', () => {
   ev.start(null);
   for (let i = 0; i < 3000; i++) {
     const p = ev.step(0.1)!;
-    for (const v of p.configs[0]!.rule) assert.ok(v > -0.6 && v < 1.6, `rule drifted to ${v}`);
+    for (const v of p.configs[0]!.rule) assert.ok(v > -0.9 && v < 1.9, `rule drifted to ${v}`);
   }
 });
 
@@ -117,39 +117,53 @@ test('Indigo Flame Society seeds with three likes', () => {
   assert.equal(SEED_LIKES['indigo flame society'], 3);
 });
 
-test('a visit really arrives: the live rule becomes the favorite, then dwells', () => {
+test('it never rests: genes are always in motion', () => {
   const ev = new Evolver(seeded(21));
   ev.setPool([
     { name: 'a', project: project(0), likes: 1 },
     { name: 'b', project: project(1), likes: 1 },
   ]);
-  ev.settings.mode = 'static';
-  ev.settings.dwellSeconds = 5;
   ev.start(project(0.5));
-  assert.equal(ev.phase, 'visit');
-  let p = ev.current()!;
-  for (let i = 0; i < 2000 && ev.phase === 'visit'; i++) p = ev.step(0.1)!;
-  assert.equal(ev.phase, 'dwell');
-  const view = ev.view();
-  assert.ok(view.nearestDistance < 1e-9, String(view.nearestDistance));
-  assert.equal(view.nearestName, view.focusName);
-  const target = view.focusName === 'a' ? 0 : 1;
-  assert.ok(p.configs[0]!.rule.every((v) => Math.abs(v - target) < 1e-9));
-  for (let i = 0; i < 60; i++) ev.step(0.1);
-  assert.equal(ev.phase, 'explore');
+  let previous = ev.current()!.configs[0]!.rule.join(',');
+  for (let i = 0; i < 600; i++) {
+    const rule = ev.step(0.25)!.configs[0]!.rule.join(',');
+    assert.notEqual(rule, previous, `frozen at step ${i}`);
+    previous = rule;
+  }
 });
 
-test('with explore at 0 it goes straight to a different favorite', () => {
-  const ev = new Evolver(seeded(4));
+test('exploration 0 and no wander: every target is exactly a favorite', () => {
+  const ev = new Evolver(seeded(8));
   ev.setPool([
     { name: 'a', project: project(0), likes: 1 },
     { name: 'b', project: project(1), likes: 1 },
   ]);
-  ev.settings.exploreSeconds = 0;
-  ev.settings.dwellSeconds = 1;
-  ev.start(null);
-  const first = ev.view().focusName;
-  for (let i = 0; i < 4000 && ev.view().focusName === first; i++) ev.step(0.1);
-  assert.notEqual(ev.view().focusName, first);
-  assert.equal(ev.phase, 'visit');
+  ev.settings.exploration = 0;
+  ev.settings.ruleWander = 0;
+  ev.settings.mode = 'static';
+  ev.start(project(0.5));
+  // Jump each gene to the end of its move: the value is then its target.
+  for (let i = 0; i < 400; i++) {
+    const p = ev.step(0.5)!;
+    for (const v of p.configs[0]!.rule) assert.ok(v > -1e-9 && v < 1 + 1e-9);
+  }
+});
+
+test('exploration reaches past the favorites, but stays leashed', () => {
+  const ev = new Evolver(seeded(13));
+  ev.setPool([
+    { name: 'a', project: project(0), likes: 1 },
+    { name: 'b', project: project(1), likes: 1 },
+  ]);
+  ev.settings.exploration = 1;
+  ev.settings.ruleWander = 0;
+  ev.start(project(0.5));
+  let beyond = false;
+  for (let i = 0; i < 4000; i++) {
+    for (const v of ev.step(0.25)!.configs[0]!.rule) {
+      assert.ok(v >= -0.5 - 1e-9 && v <= 1.5 + 1e-9, `escaped the leash: ${v}`);
+      if (v < -0.05 || v > 1.05) beyond = true;
+    }
+  }
+  assert.ok(beyond, 'never explored past a favorite');
 });

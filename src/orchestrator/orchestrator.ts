@@ -115,6 +115,7 @@ import {
 import { BC, type SimulationConfig } from '../particleSystem/config.ts';
 import { canvasDimensions, sizingFor } from '../particleSystem/sizing.ts';
 import {
+  ARCHIVE_CATEGORY,
   type ConfigEntry,
   ConfigStore,
   CUSTOM_CATEGORY,
@@ -2094,10 +2095,9 @@ export class Orchestrator implements CommandBus {
   }
 
   /**
-   * Load the attractor pool: localStorage first; otherwise seed it from the
-   * save library (every save becomes an attractor, baked, with the like counts
-   * in `SEED_LIKES`). An empty library leaves an empty pool -- importing saves
-   * (Share > Import) or pressing ♥ fills it.
+   * Load the attractor pool: localStorage first; otherwise seed it from this
+   * browser's saves plus the bundled Jensen category (every one becomes an
+   * attractor, baked, with the like counts in `SEED_LIKES`).
    */
   async initPool(): Promise<void> {
     this.evolver.ready = false;
@@ -2124,19 +2124,36 @@ export class Orchestrator implements CommandBus {
         console.warn(`Skipped seed attractor ${save.name}:`, err);
       }
     }
-    // Nothing saved in this browser: fall back to the saves shipped with the
-    // site (`configs/Jensen/`), so a fresh device can evolve straight away.
-    if (seeds.length === 0) {
-      for (const name of this.store.catalog().categories[HOME_CATEGORY] ?? []) {
-        try {
-          const entry = this.store.entry(HOME_CATEGORY, name);
-          if (entry === null) continue;
-          const parsed = await this.store.read(entry);
-          const project = makeProject({ configs: parsed.configs, world: parsed.world, name });
-          const likes = SEED_LIKES[name.toLowerCase().replace(/[-_]+/g, ' ').trim()] ?? 1;
-          seeds.push({ name, likes, project: await this.bake(project, true) });
-        } catch (err: unknown) {
-          console.warn(`Skipped bundled attractor ${name}:`, err);
+    // PLUS EVERY OTHER SAVED STATE the app knows: the bundled Jensen category
+    // first, then Core and any other preset category -- skipping names this
+    // browser already has. (Seeding from the browser's saves alone meant one
+    // import gave a pool of one.) The Archive is left out: it is a record of
+    // past experiments, not a set of favorites, and it is large.
+    {
+      const norm = (n: string): string => n.toLowerCase().replace(/[-_]+/g, ' ').trim();
+      const have = new Set(seeds.map((x) => norm(x.name)));
+      const { categories } = this.store.catalog();
+      const order = Object.keys(categories)
+        .filter((c) => c !== CUSTOM_CATEGORY && c !== ARCHIVE_CATEGORY)
+        .sort((a, b) => Number(b === HOME_CATEGORY) - Number(a === HOME_CATEGORY));
+      for (const category of order) {
+        for (const name of categories[category] ?? []) {
+          if (have.has(norm(name))) continue;
+          try {
+            const entry = this.store.entry(category, name);
+            if (entry === null) continue;
+            const parsed = await this.store.read(entry);
+            const project = makeProject({ configs: parsed.configs, world: parsed.world, name });
+            const likes = SEED_LIKES[norm(name)] ?? 1;
+            const baked = await this.bake(project, true);
+            // A rule still all-zero here could not be baked (it is generated
+            // on the GPU from its seed); blending toward zeros would be noise.
+            if (baked.configs[0]!.rule.every((v) => v === 0)) continue;
+            seeds.push({ name, likes, project: baked });
+            have.add(norm(name));
+          } catch (err: unknown) {
+            console.warn(`Skipped attractor ${category}/${name}:`, err);
+          }
         }
       }
     }

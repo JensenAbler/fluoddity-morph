@@ -13,14 +13,14 @@
  *   - THE SPEED DISTRIBUTION CAN BE STATIC (who is slow and who is fast is
  *     fixed) or FLUID (every rank random-walks on its own, much slower clock,
  *     so the sensor that was glacial can wake up and become the fast thing).
- *   - IT VISITS. The evolver alternates two phases. VISIT: every gene heads
- *     for one attractor (picked by likes) with no wander at all, each on its
- *     own clock, so the creature reassembles into that favorite gene by gene
- *     and then dwells there. EXPLORE: genes wander around and between
- *     favorites (below) for a while before the next visit. Without the visit
- *     phase, independent per-gene clocks meant the rule was always a mosaic of
- *     genes in flight to different targets and never actually AT a favorite --
- *     it read as drifting into noise.
+ *   - IT NEVER RESTS, AND IT EXPLORES. Each gene, the moment it reaches a
+ *     target, picks the next one -- so the creature is always changing. A
+ *     target is drawn from the line between the FOCUS favorite (which changes
+ *     every `focusSeconds`) and another favorite, at a random position that,
+ *     with `exploration` up, runs past both ends -- into the space between and
+ *     beyond what you liked, not just onto it. At exploration 0 targets are the
+ *     favorites themselves. (An earlier version visited favorites exactly and
+ *     paused there; it read as too tame.)
  *   - THE RULE IS ON A LEASH. Rule genes never random-walk freely -- that finds
  *     dead creatures. Each new rule target is some attractor's gene plus a
  *     small perturbation, so the creature only ever wanders between and just
@@ -104,10 +104,14 @@ export interface EvolveSettings {
   ruleWander: number;
   /** Setting perturbation around attractors, as a fraction of slider range. */
   settingWander: number;
-  /** Seconds to dwell on an attractor once every gene has arrived. */
-  dwellSeconds: number;
-  /** Seconds of free exploring between visits. 0 goes straight to the next. */
-  exploreSeconds: number;
+  /**
+   * 0..1: how far targets range from the favorites. 0 = exactly a favorite;
+   * 0.5 = anywhere between two favorites; 1 = up to half as far again past
+   * either one.
+   */
+  exploration: number;
+  /** Seconds the focus favorite holds before the drift turns toward another. */
+  focusSeconds: number;
 }
 
 export const DEFAULT_SETTINGS: EvolveSettings = {
@@ -121,8 +125,8 @@ export const DEFAULT_SETTINGS: EvolveSettings = {
   coherence: 0.85,
   ruleWander: 0.1,
   settingWander: 0.03,
-  dwellSeconds: 8,
-  exploreSeconds: 15,
+  exploration: 0.6,
+  focusSeconds: 30,
 };
 
 /** The phase-field arrangement: rule glacial, sensors slow, forces medium, color fast. */
@@ -199,8 +203,6 @@ interface GeneState {
   seconds: number;
 }
 
-export type EvolvePhase = 'visit' | 'dwell' | 'explore';
-
 /** Euclidean distance between two rules, each float scaled by the pool spread. */
 export function ruleDistance(
   a: readonly number[],
@@ -218,12 +220,9 @@ export function ruleDistance(
 export interface EvolveView {
   readonly running: boolean;
   readonly attractors: readonly { key: number; name: string; likes: number }[];
-  /** The attractor being visited (or explored around). */
+  /** The favorite the drift is currently centred on. */
   readonly focusKey: number;
   readonly focusName: string;
-  readonly phase: EvolvePhase;
-  /** Genes that have reached the visited attractor, during a visit. */
-  readonly arrived: number;
   /** Nearest attractor to the live rule, and how far (in pool-spread units). */
   readonly nearestName: string;
   readonly nearestDistance: number;
@@ -244,8 +243,7 @@ export class Evolver {
   private genes: GeneState[] = [];
   private base: Project | null = null;
   private focus: Attractor | null = null;
-  private phaseClock = 0;
-  phase: EvolvePhase = 'visit';
+  private focusClock = 0;
   private lastSpread: number[] = [];
   readonly settings: EvolveSettings = { ...DEFAULT_SETTINGS };
   ranks: number[] = layeredRanks();
@@ -314,16 +312,28 @@ export class Evolver {
   }
 
   private target(i: number, spread: readonly number[]): number[] {
-    if (this.phase !== 'explore' && this.focus !== null) {
-      // Visiting: exactly the favorite, no wander.
-      return geneOf(this.focus.project, i);
-    }
-    const aim =
+    const a =
       this.focus !== null && this.rng() < this.settings.coherence
         ? this.focus
         : pickAttractor(this.pool, this.rng);
-    if (aim === null) return this.genes[i]!.to;
-    const g = geneOf(aim.project, i);
+    if (a === null) return this.genes[i]!.to;
+    const ga = geneOf(a.project, i);
+    // Somewhere on the line from A toward another favorite B -- and with
+    // exploration up, past either end of it.
+    const e = clamp(this.settings.exploration, 0, 1);
+    let g = ga;
+    if (e > 0 && this.pool.length > 1) {
+      let b = pickAttractor(this.pool, this.rng);
+      for (let tries = 0; tries < 6 && b?.key === a.key; tries++) b = pickAttractor(this.pool, this.rng);
+      if (b !== null && b.key !== a.key) {
+        const gb = geneOf(b.project, i);
+        // e=0.5 spans [0, 1] (A..B); e=1 spans [-0.5, 1.5].
+        const lo = -Math.max(0, e - 0.5);
+        const hi = Math.min(1, 2 * e) + Math.max(0, e - 0.5);
+        const w = lo + (hi - lo) * this.rng();
+        g = ga.map((v, k) => v + w * (gb[k]! - v));
+      }
+    }
     if (i < RULE_GENES) {
       return g.map(
         (v, k) => v + this.settings.ruleWander * spread[i * FLOATS_PER_CENTER + k]! * gaussian(this.rng),
@@ -334,7 +344,7 @@ export class Evolver {
     return [clamp(g[0]! + this.settings.settingWander * range * gaussian(this.rng), spec.lo, spec.hi)];
   }
 
-  /** Start from `project` (or the focus attractor) and begin wandering. */
+  /** Start from `project` (or a favorite) and begin drifting. */
   start(from: Project | null): boolean {
     if (this.pool.length === 0) return false;
     const origin = from ?? pickAttractor(this.pool, this.rng)!.project;
@@ -344,30 +354,22 @@ export class Evolver {
       return { from: now, to: now, t: 1, seconds: 1 };
     });
     this.focus = null;
-    this.beginVisit();
+    this.nextFocus();
+    const spread = this.ruleSpread();
+    this.genes.forEach((g, i) => this.retarget(g, i, spread));
     this.running = true;
     return true;
   }
 
-  /** Pick the next favorite (not the same one twice running) and send every gene to it. */
-  private beginVisit(): void {
+  /** Turn the drift toward another favorite (never the same one twice running). */
+  private nextFocus(): void {
     const previous = this.focus;
     let next = pickAttractor(this.pool, this.rng);
     for (let tries = 0; tries < 6 && this.pool.length > 1 && next?.key === previous?.key; tries++) {
       next = pickAttractor(this.pool, this.rng);
     }
     this.focus = next;
-    this.phase = 'visit';
-    this.phaseClock = 0;
-    const spread = this.ruleSpread();
-    this.genes.forEach((g, i) => this.retarget(g, i, spread));
-  }
-
-  private beginExplore(): void {
-    this.phase = 'explore';
-    this.phaseClock = 0;
-    const spread = this.ruleSpread();
-    this.genes.forEach((g, i) => this.retarget(g, i, spread));
+    this.focusClock = 0;
   }
 
   /** Start gene `i` toward a fresh target from wherever it is right now. */
@@ -394,7 +396,8 @@ export class Evolver {
     const spread = this.ruleSpread();
 
     this.lastSpread = spread;
-    this.phaseClock += dt;
+    this.focusClock += dt;
+    if (this.focusClock >= s.focusSeconds) this.nextFocus();
 
     // Fluid mode: every rank random-walks (mean-reverting, reflecting at 0/1).
     if (s.mode === 'fluid' && s.fluidSeconds > 0) {
@@ -407,30 +410,16 @@ export class Evolver {
       });
     }
 
+    // NEVER RESTS: a gene that arrives sets off for its next target at once.
     this.genes.forEach((g, i) => {
       g.t += dt / Math.max(0.1, g.seconds);
       if (g.t >= 1) {
-        if (this.phase === 'explore') {
-          g.from = g.to;
-          g.to = this.target(i, spread);
-          g.seconds = durationFor(this.ranks[i]!, s) * (0.75 + 0.5 * this.rng());
-          g.t = 0;
-        } else {
-          // Visiting or dwelling: an arrived gene stays put on the favorite.
-          g.t = 1;
-        }
+        g.from = g.to;
+        g.to = this.target(i, spread);
+        g.seconds = durationFor(this.ranks[i]!, s) * (0.75 + 0.5 * this.rng());
+        g.t = 0;
       }
     });
-
-    if (this.phase === 'visit' && this.genes.every((g) => g.t >= 1)) {
-      this.phase = 'dwell';
-      this.phaseClock = 0;
-    } else if (this.phase === 'dwell' && this.phaseClock >= s.dwellSeconds) {
-      if (s.exploreSeconds > 0) this.beginExplore();
-      else this.beginVisit();
-    } else if (this.phase === 'explore' && this.phaseClock >= s.exploreSeconds) {
-      this.beginVisit();
-    }
     return this.current();
   }
 
@@ -484,8 +473,6 @@ export class Evolver {
       attractors: this.pool.map(({ key, name, likes }) => ({ key, name, likes })),
       focusKey: this.focus?.key ?? -1,
       focusName: this.focus?.name ?? '',
-      phase: this.phase,
-      arrived: this.genes.filter((g) => g.t >= 1).length,
       ...this.nearest(),
       ranks: this.ranks,
       progress: this.genes.length === GENE_COUNT ? this.genes.map((g) => g.t) : [],

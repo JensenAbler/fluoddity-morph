@@ -11,7 +11,11 @@
 import { fromDocument, toDocument } from '../config/persistence.ts';
 import { type Project, makeProject } from '../project/project.ts';
 
-const KEY = 'fluoddity-morph.attractors.v1';
+// v2: the pool now seeds from every saved state (yours, the bundled Jensen
+// category and the presets), and evolving is a continuous drift. Bumping the
+// key re-seeds once, so a pool stored by the old rules (sometimes a single
+// attractor) does not linger.
+const KEY = 'fluoddity-morph.attractors.v2';
 
 export interface StoredAttractor {
   readonly name: string;
