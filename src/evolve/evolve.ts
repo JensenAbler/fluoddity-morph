@@ -13,14 +13,16 @@
  *   - THE SPEED DISTRIBUTION CAN BE STATIC (who is slow and who is fast is
  *     fixed) or FLUID (every rank random-walks on its own, much slower clock,
  *     so the sensor that was glacial can wake up and become the fast thing).
- *   - IT NEVER RESTS, AND IT EXPLORES. Each gene, the moment it reaches a
- *     target, picks the next one -- so the creature is always changing. A
- *     target is drawn from the line between the FOCUS favorite (which changes
- *     every `focusSeconds`) and another favorite, at a random position that,
- *     with `exploration` up, runs past both ends -- into the space between and
- *     beyond what you liked, not just onto it. At exploration 0 targets are the
- *     favorites themselves. (An earlier version visited favorites exactly and
- *     paused there; it read as too tame.)
+ *   - IT COMMITS TO A DIRECTION, WITH MOMENTUM (after Tunnel Evolve's
+ *     spring system). A single TARGET POINT glides along the line between two
+ *     favorites -- the focus and another -- at a steady pace, running past
+ *     both ends as `exploration` rises, turning back or onto a new line when
+ *     it reaches an end. Every gene is a critically damped SPRING chasing that
+ *     moving point: velocity carries through every change of target, so
+ *     nothing ever snaps, stops and starts. Slow genes lag far behind the
+ *     point, fast ones track it closely; the whole creature heads the same
+ *     way. (Earlier versions eased each gene between independent waypoints --
+ *     zero velocity at every one -- which read as hesitant.)
  *   - THE RULE IS ON A LEASH. Rule genes never random-walk freely -- that finds
  *     dead creatures. Each new rule target is some attractor's gene plus a
  *     small perturbation, so the creature only ever wanders between and just
@@ -112,6 +114,8 @@ export interface EvolveSettings {
   exploration: number;
   /** Seconds the focus favorite holds before the drift turns toward another. */
   focusSeconds: number;
+  /** Seconds for the target point to glide from one favorite to the other. */
+  strideSeconds: number;
 }
 
 export const DEFAULT_SETTINGS: EvolveSettings = {
@@ -126,17 +130,18 @@ export const DEFAULT_SETTINGS: EvolveSettings = {
   ruleWander: 0.1,
   settingWander: 0.03,
   exploration: 0.6,
-  focusSeconds: 30,
+  focusSeconds: 45,
+  strideSeconds: 25,
 };
 
 /** The phase-field arrangement: rule glacial, sensors slow, forces medium, color fast. */
 export function layeredRanks(): number[] {
   const byFamily: Record<GeneFamily, number> = {
-    rule: 0.92,
-    sensor: 0.7,
+    rule: 0.7,
+    sensor: 0.55,
     trail: 0.6,
     force: 0.45,
-    color: 0.12,
+    color: 0.9,
   };
   return Array.from({ length: GENE_COUNT }, (_, i) => byFamily[geneFamily(i)]);
 }
@@ -148,11 +153,6 @@ function gaussian(rng: Rng): number {
   const u = 1 - rng();
   const v = rng();
   return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
-}
-
-function smooth(t: number): number {
-  const x = Math.min(1, Math.max(0, t));
-  return x * x * (3 - 2 * x);
 }
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -197,11 +197,20 @@ export function durationFor(rank: number, s: EvolveSettings): number {
 }
 
 interface GeneState {
-  from: number[];
-  to: number[];
-  t: number;
-  seconds: number;
+  /** Where the gene is. */
+  x: number[];
+  /** How fast it is moving (units per second) -- carried through every retarget. */
+  v: number[];
+  /** A fixed wander offset for the current line, so jitter is a place, not noise. */
+  offset: number[];
+  /** The pair this gene follows, when it is not following the shared one. */
+  own: { a: Attractor; b: Attractor } | null;
 }
+
+/** Color genes never run faster than this rank: hue sweeps read as flicker. */
+const COLOR_MIN_RANK = 0.85;
+/** Critical damping: no overshoot of a still target, and no sloshing. */
+const DAMPING_RATIO = 1;
 
 /** Euclidean distance between two rules, each float scaled by the pool spread. */
 export function ruleDistance(
@@ -244,6 +253,10 @@ export class Evolver {
   private base: Project | null = null;
   private focus: Attractor | null = null;
   private focusClock = 0;
+  /** The shared line the target point glides along, and where on it it is. */
+  private pair: { a: Attractor; b: Attractor } | null = null;
+  private w = 0;
+  private direction = 1;
   private lastSpread: number[] = [];
   readonly settings: EvolveSettings = { ...DEFAULT_SETTINGS };
   ranks: number[] = layeredRanks();
@@ -311,37 +324,86 @@ export class Evolver {
     });
   }
 
-  private target(i: number, spread: readonly number[]): number[] {
-    const a =
-      this.focus !== null && this.rng() < this.settings.coherence
-        ? this.focus
-        : pickAttractor(this.pool, this.rng);
-    if (a === null) return this.genes[i]!.to;
-    const ga = geneOf(a.project, i);
-    // Somewhere on the line from A toward another favorite B -- and with
-    // exploration up, past either end of it.
+  /** The range the target point may roam along a line, from `exploration`. */
+  private span(): { lo: number; hi: number } {
     const e = clamp(this.settings.exploration, 0, 1);
-    let g = ga;
-    if (e > 0 && this.pool.length > 1) {
-      let b = pickAttractor(this.pool, this.rng);
-      for (let tries = 0; tries < 6 && b?.key === a.key; tries++) b = pickAttractor(this.pool, this.rng);
-      if (b !== null && b.key !== a.key) {
-        const gb = geneOf(b.project, i);
-        // e=0.5 spans [0, 1] (A..B); e=1 spans [-0.5, 1.5].
-        const lo = -Math.max(0, e - 0.5);
-        const hi = Math.min(1, 2 * e) + Math.max(0, e - 0.5);
-        const w = lo + (hi - lo) * this.rng();
-        g = ga.map((v, k) => v + w * (gb[k]! - v));
-      }
+    // e=0: pinned to the focus favorite. e=0.5: the whole line A..B.
+    // e=1: half as far again past both ends.
+    return { lo: -Math.max(0, e - 0.5), hi: Math.min(1, 2 * e) + Math.max(0, e - 0.5) };
+  }
+
+  private otherThan(a: Attractor): Attractor {
+    let b = pickAttractor(this.pool, this.rng) ?? a;
+    for (let tries = 0; tries < 8 && this.pool.length > 1 && b.key === a.key; tries++) {
+      b = pickAttractor(this.pool, this.rng) ?? a;
     }
+    return b;
+  }
+
+  /**
+   * Start a new line and give genes fresh offsets. Without `from`, it runs
+   * from the focus favorite to another. With `from` -- the favorite the point
+   * just reached -- the journey CHAINS: it carries on from there toward the
+   * focus (or, if it is already at the focus, toward someone new), so one trip
+   * flows into the next instead of jumping back to a start.
+   */
+  private newLine(spread: readonly number[], from?: Attractor): void {
+    let a: Attractor | null;
+    let b: Attractor;
+    if (from === undefined) {
+      a = this.focus ?? pickAttractor(this.pool, this.rng);
+      if (a === null) return;
+      b = this.otherThan(a);
+      this.w = this.span().lo;
+    } else {
+      a = from;
+      b = this.focus !== null && this.focus.key !== from.key ? this.focus : this.otherThan(from);
+      this.w = 0;
+    }
+    this.pair = { a, b };
+    this.direction = 1;
+    this.genes.forEach((g, i) => {
+      // Low coherence: some genes follow a line of their own (recombination).
+      g.own =
+        this.rng() < this.settings.coherence
+          ? null
+          : (() => {
+              const oa = pickAttractor(this.pool, this.rng) ?? a;
+              return { a: oa, b: this.otherThan(oa) };
+            })();
+      g.offset = this.offsetFor(i, spread);
+    });
+  }
+
+  private offsetFor(i: number, spread: readonly number[]): number[] {
     if (i < RULE_GENES) {
-      return g.map(
-        (v, k) => v + this.settings.ruleWander * spread[i * FLOATS_PER_CENTER + k]! * gaussian(this.rng),
+      return Array.from(
+        { length: FLOATS_PER_CENTER },
+        (_, k) => this.settings.ruleWander * spread[i * FLOATS_PER_CENTER + k]! * gaussian(this.rng),
       );
     }
     const spec = SCALARS[i - RULE_GENES]!;
-    const range = spec.hi - spec.lo;
-    return [clamp(g[0]! + this.settings.settingWander * range * gaussian(this.rng), spec.lo, spec.hi)];
+    return [this.settings.settingWander * (spec.hi - spec.lo) * gaussian(this.rng)];
+  }
+
+  /** Where gene `i` is being pulled right now. */
+  private targetOf(i: number, g: GeneState): number[] {
+    const pair = g.own ?? this.pair;
+    if (pair === null) return g.x;
+    const ga = geneOf(pair.a.project, i);
+    const gb = geneOf(pair.b.project, i);
+    const t = ga.map((v, k) => v + this.w * (gb[k]! - v) + (g.offset[k] ?? 0));
+    if (i >= RULE_GENES) {
+      const spec = SCALARS[i - RULE_GENES]!;
+      t[0] = clamp(t[0]!, spec.lo, spec.hi);
+    }
+    return t;
+  }
+
+  /** Effective speed rank for gene `i` (color is held slow). */
+  private rankOf(i: number): number {
+    const r = this.ranks[i]!;
+    return geneFamily(i) === 'color' ? Math.max(r, COLOR_MIN_RANK) : r;
   }
 
   /** Start from `project` (or a favorite) and begin drifting. */
@@ -350,13 +412,12 @@ export class Evolver {
     const origin = from ?? pickAttractor(this.pool, this.rng)!.project;
     this.base = origin;
     this.genes = Array.from({ length: GENE_COUNT }, (_, i) => {
-      const now = geneOf(origin, i);
-      return { from: now, to: now, t: 1, seconds: 1 };
+      const x = geneOf(origin, i);
+      return { x, v: x.map(() => 0), offset: x.map(() => 0), own: null };
     });
     this.focus = null;
     this.nextFocus();
-    const spread = this.ruleSpread();
-    this.genes.forEach((g, i) => this.retarget(g, i, spread));
+    this.newLine(this.ruleSpread());
     this.running = true;
     return true;
   }
@@ -372,52 +433,77 @@ export class Evolver {
     this.focusClock = 0;
   }
 
-  /** Start gene `i` toward a fresh target from wherever it is right now. */
-  private retarget(g: GeneState, i: number, spread: readonly number[]): void {
-    g.from = this.valueOf(g);
-    g.to = this.target(i, spread);
-    g.seconds = durationFor(this.ranks[i]!, this.settings) * (0.75 + 0.5 * this.rng());
-    g.t = 0;
-  }
-
-  private valueOf(g: GeneState): number[] {
-    const u = smooth(g.t);
-    return g.from.map((v, k) => v + (g.to[k]! - v) * u);
-  }
-
   stop(): void {
     this.running = false;
   }
 
-  /** Advance every clock by `dt` seconds and return the project to show. */
+  /** Advance the target point and every spring by `dt` seconds; return the project to show. */
   step(dt: number): Project | null {
     if (!this.running || this.base === null || this.pool.length === 0) return null;
     const s = this.settings;
     const spread = this.ruleSpread();
-
     this.lastSpread = spread;
+
     this.focusClock += dt;
-    if (this.focusClock >= s.focusSeconds) this.nextFocus();
+    let focusChanged = false;
+    if (this.focusClock >= s.focusSeconds) {
+      this.nextFocus();
+      focusChanged = true;
+    }
 
     // Fluid mode: every rank random-walks (mean-reverting, reflecting at 0/1).
     if (s.mode === 'fluid' && s.fluidSeconds > 0) {
       const k = dt / s.fluidSeconds;
       this.ranks = this.ranks.map((r) => {
-        let next = r + 0.3 * (0.5 - r) * k + Math.sqrt(k) * 0.45 * gaussian(this.rng);
+        let next = r + 0.3 * (0.5 - r) * k + Math.sqrt(k) * 0.35 * gaussian(this.rng);
         if (next < 0) next = -next;
         if (next > 1) next = 2 - next;
         return clamp(next, 0, 1);
       });
     }
 
-    // NEVER RESTS: a gene that arrives sets off for its next target at once.
+    // THE TARGET POINT glides at a steady pace along its line. At an end it
+    // either turns back (momentum kept, direction flipped) or -- if the focus
+    // has moved on, or by chance -- sets off along a new line.
+    const { lo, hi } = this.span();
+    if (this.pair === null) this.newLine(spread);
+    if (hi > lo) {
+      this.w += (this.direction * (hi - lo) * dt) / Math.max(1, s.strideSeconds);
+      if (this.w > hi || this.w < lo) {
+        if (focusChanged || this.rng() < 0.5) {
+          const reached = this.pair === null ? undefined : this.direction > 0 ? this.pair.b : this.pair.a;
+          this.newLine(spread, reached);
+        } else {
+          this.w = clamp(this.w, lo, hi);
+          this.direction = -this.direction;
+        }
+      }
+    } else {
+      this.w = lo;
+      if (focusChanged) this.newLine(spread);
+    }
+
+    // EVERY GENE IS A SPRING chasing the point. Critically damped, so a still
+    // target is reached without overshoot; velocity carries through every move
+    // of the target, so the creature never stops to think.
     this.genes.forEach((g, i) => {
-      g.t += dt / Math.max(0.1, g.seconds);
-      if (g.t >= 1) {
-        g.from = g.to;
-        g.to = this.target(i, spread);
-        g.seconds = durationFor(this.ranks[i]!, s) * (0.75 + 0.5 * this.rng());
-        g.t = 0;
+      const target = this.targetOf(i, g);
+      const omega = 3 / durationFor(this.rankOf(i), s);
+      const steps = Math.max(1, Math.ceil((omega * dt) / 0.2));
+      const h = dt / steps;
+      for (let n = 0; n < steps; n++) {
+        for (let k = 0; k < g.x.length; k++) {
+          const a = omega * omega * (target[k]! - g.x[k]!) - 2 * DAMPING_RATIO * omega * g.v[k]!;
+          g.v[k] = g.v[k]! + a * h;
+          g.x[k] = g.x[k]! + g.v[k]! * h;
+        }
+      }
+      if (i >= RULE_GENES) {
+        const spec = SCALARS[i - RULE_GENES]!;
+        if (g.x[0]! < spec.lo || g.x[0]! > spec.hi) {
+          g.x[0] = clamp(g.x[0]!, spec.lo, spec.hi);
+          g.v[0] = 0;
+        }
       }
     });
     return this.current();
@@ -431,7 +517,7 @@ export class Evolver {
     const config: Record<string, unknown> = { ...baseConfig };
     const world: Record<string, unknown> = { ...this.base.world };
     this.genes.forEach((g, i) => {
-      const value = this.valueOf(g);
+      const value = g.x;
       if (i < RULE_GENES) {
         value.forEach((v, k) => {
           rule[i * FLOATS_PER_CENTER + k] = v;
@@ -475,7 +561,15 @@ export class Evolver {
       focusName: this.focus?.name ?? '',
       ...this.nearest(),
       ranks: this.ranks,
-      progress: this.genes.length === GENE_COUNT ? this.genes.map((g) => g.t) : [],
+      // Per gene: how hard it is moving right now, as a fraction of its pace.
+      progress:
+        this.genes.length === GENE_COUNT
+          ? this.genes.map((g, i) => {
+              const speed = Math.sqrt(g.v.reduce((acc, v) => acc + v * v, 0));
+              const scale = i < RULE_GENES ? 1 : SCALARS[i - RULE_GENES]!.hi - SCALARS[i - RULE_GENES]!.lo;
+              return clamp((speed * durationFor(this.rankOf(i), this.settings)) / scale, 0, 1);
+            })
+          : [],
       settings: { ...this.settings },
     };
   }

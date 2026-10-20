@@ -142,10 +142,10 @@ test('exploration 0 and no wander: every target is exactly a favorite', () => {
   ev.settings.ruleWander = 0;
   ev.settings.mode = 'static';
   ev.start(project(0.5));
-  // Jump each gene to the end of its move: the value is then its target.
+  // Springs may overshoot a MOVING target slightly; never far past a favorite.
   for (let i = 0; i < 400; i++) {
     const p = ev.step(0.5)!;
-    for (const v of p.configs[0]!.rule) assert.ok(v > -1e-9 && v < 1 + 1e-9);
+    for (const v of p.configs[0]!.rule) assert.ok(v > -0.1 && v < 1.1, String(v));
   }
 });
 
@@ -161,9 +161,31 @@ test('exploration reaches past the favorites, but stays leashed', () => {
   let beyond = false;
   for (let i = 0; i < 4000; i++) {
     for (const v of ev.step(0.25)!.configs[0]!.rule) {
-      assert.ok(v >= -0.5 - 1e-9 && v <= 1.5 + 1e-9, `escaped the leash: ${v}`);
+      assert.ok(v >= -0.65 && v <= 1.65, `escaped the leash: ${v}`);
       if (v < -0.05 || v > 1.05) beyond = true;
     }
   }
   assert.ok(beyond, 'never explored past a favorite');
+});
+
+test('momentum: velocity never collapses to zero while the point glides', () => {
+  const ev = new Evolver(seeded(31));
+  ev.setPool([
+    { name: 'a', project: project(0), likes: 1 },
+    { name: 'b', project: project(1), likes: 1 },
+  ]);
+  ev.settings.mode = 'static';
+  ev.start(project(0));
+  // Let it get going, then watch one rule float's speed between frames.
+  for (let i = 0; i < 40; i++) ev.step(0.1);
+  let prev = ev.current()!.configs[0]!.rule[0]!;
+  let stalls = 0;
+  for (let i = 0; i < 1500; i++) {
+    const now = ev.step(0.1)!.configs[0]!.rule[0]!;
+    if (Math.abs(now - prev) < 1e-5) stalls++;
+    prev = now;
+  }
+  // A turn at the end of a line passes through zero velocity once; it must
+  // be a moment, not a habit.
+  assert.ok(stalls < 30, `stalled ${stalls} frames`);
 });
