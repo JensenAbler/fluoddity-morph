@@ -271,6 +271,10 @@ export class EvolveTab {
       const minus = this.button('−', ICON, () => send({ kind: 'evolveAdjustLikes', key: a.key, delta: -1 }));
       minus.title = 'Fewer likes. At ♥0 this one is muted: kept, but never visited';
       if (a.likes <= 0) name.style.opacity = '0.45';
+      if (a.chill >= 15) {
+        name.textContent = `❄ ${a.name}`;
+        name.title = `Froze near here for ${String(a.chill)}s this session, so it is visited less. Stop evolving and show this one`;
+      }
       const likes = document.createElement('span');
       likes.textContent = `♥${String(a.likes)}`;
       likes.style.cssText = 'min-width:30px;text-align:center;color:#f9a8d4;font-variant-numeric:tabular-nums;';
@@ -346,7 +350,9 @@ export class EvolveTab {
     const fluid = this.sliders.get('fluidSeconds');
     if (fluid !== undefined) fluid.input.disabled = ev.settings.mode === 'static';
 
-    const signature = ev.attractors.map((a) => `${a.key}:${a.name}:${a.likes}`).join(',');
+    const signature = ev.attractors
+      .map((a) => `${a.key}:${a.name}:${a.likes}:${a.chill >= 15 ? 'c' : ''}`)
+      .join(',');
     if (signature !== this.listSignature) {
       this.listSignature = signature;
       this.rebuildList(status);

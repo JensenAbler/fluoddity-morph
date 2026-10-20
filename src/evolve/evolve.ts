@@ -197,7 +197,20 @@ export const DEFAULT_SETTINGS: EvolveSettings = {
 /** While cold, the target point moves this many times faster -- out of the freeze. */
 const COLD_SPEEDUP = 3;
 /** Cold this long and the drift turns around, back toward where it was alive. */
-const COLD_TURN_SECONDS = 8;
+const COLD_TURN_SECONDS = 6;
+/**
+ * Still cold this long and the whole line is abandoned: a new one starts from
+ * the favorite the drift was last WARM near. The third session had a line
+ * (Pebbles > Rippler) frozen from end to end -- turning around only swept
+ * back through more of the same.
+ */
+const COLD_ABANDON_SECONDS = 15;
+/**
+ * Seconds of attributed cold that halve a favorite's chance of being picked.
+ * Learned per session: an endpoint the drift keeps freezing near gets visited
+ * less, without anyone muting it by hand.
+ */
+const CHILL_HALF_SECONDS = 20;
 
 /** The phase-field arrangement: rule glacial, sensors slow, forces medium, color fast. */
 export function layeredRanks(): number[] {
@@ -264,6 +277,30 @@ export function pickAttractor(pool: readonly Attractor[], rng: Rng): Attractor |
   return null;
 }
 
+/**
+ * Weighted pick with an extra per-attractor factor (the evolver's learned
+ * "chill" -- see `Evolver.weight`). Muted (♥0) attractors stay out.
+ */
+export function pickWeighted(
+  pool: readonly Attractor[],
+  rng: Rng,
+  factor: (a: Attractor) => number,
+): Attractor | null {
+  if (pool.length === 0) return null;
+  const weight = (a: Attractor): number => Math.max(0, a.likes) * factor(a);
+  const total = pool.reduce((s, a) => s + weight(a), 0);
+  if (total <= 0) return pickAttractor(pool, rng);
+  let r = rng() * total;
+  for (const a of pool) {
+    const w = weight(a);
+    if (w <= 0) continue;
+    r -= w;
+    if (r <= 0) return a;
+  }
+  for (let i = pool.length - 1; i >= 0; i--) if (weight(pool[i]!) > 0) return pool[i]!;
+  return null;
+}
+
 /** Map a speed rank onto seconds, honoring min/max and skew. */
 export function durationFor(rank: number, s: EvolveSettings): number {
   const lo = Math.max(0.5, Math.min(s.minSeconds, s.maxSeconds));
@@ -313,7 +350,8 @@ export interface EvolveView {
   /** Measured motion relative to this run's recent peak, and whether it is cold. */
   readonly temperature: number;
   readonly cold: boolean;
-  readonly attractors: readonly { key: number; name: string; likes: number }[];
+  /** `chill`: learned seconds of cold near this favorite this session. */
+  readonly attractors: readonly { key: number; name: string; likes: number; chill: number }[];
   /** The favorite the drift is currently centred on. */
   readonly focusKey: number;
   readonly focusName: string;
@@ -345,8 +383,13 @@ export class Evolver {
   private lastSpread: number[] = [];
   /** Measured motion, from the Orchestrator's temperature probe. */
   private temperature = { relative: 1, cold: false, coldFor: 0 };
-  /** Whether this cold spell has already turned the drift around. */
+  /** Whether this cold spell has already turned the drift around / abandoned the line. */
   private turnedThisSpell = false;
+  private abandonedThisSpell = false;
+  /** Learned cold, in seconds, attributed to each favorite (by key). */
+  private readonly chill = new Map<number, number>();
+  /** The favorite the drift was last near while clearly warm. */
+  private warmAnchor: Attractor | null = null;
   readonly settings: EvolveSettings = { ...DEFAULT_SETTINGS };
   ranks: number[] = layeredRanks();
   running = false;
@@ -422,9 +465,9 @@ export class Evolver {
   }
 
   private otherThan(a: Attractor): Attractor {
-    let b = pickAttractor(this.pool, this.rng) ?? a;
+    let b = this.pick() ?? a;
     for (let tries = 0; tries < 8 && this.pool.length > 1 && b.key === a.key; tries++) {
-      b = pickAttractor(this.pool, this.rng) ?? a;
+      b = this.pick() ?? a;
     }
     return b;
   }
@@ -440,7 +483,7 @@ export class Evolver {
     let a: Attractor | null;
     let b: Attractor;
     if (from === undefined) {
-      a = this.focus ?? pickAttractor(this.pool, this.rng);
+      a = this.focus ?? this.pick();
       if (a === null) return;
       b = this.otherThan(a);
       this.w = this.span().lo;
@@ -457,7 +500,7 @@ export class Evolver {
         this.rng() < this.settings.coherence
           ? null
           : (() => {
-              const oa = pickAttractor(this.pool, this.rng) ?? a;
+              const oa = this.pick() ?? a;
               return { a: oa, b: this.otherThan(oa) };
             })();
       g.offsetGoal = this.offsetFor(i, spread);
@@ -482,7 +525,26 @@ export class Evolver {
   /** Feed in the latest measured temperature (see `telemetry/temperature.ts`). */
   setTemperature(t: { relative: number; cold: boolean; coldFor: number }): void {
     this.temperature = { relative: t.relative, cold: t.cold, coldFor: t.coldFor };
-    if (!t.cold) this.turnedThisSpell = false;
+    if (!t.cold) {
+      this.turnedThisSpell = false;
+      this.abandonedThisSpell = false;
+    }
+  }
+
+  /** Likes, discounted by learned chill. */
+  private weight(a: Attractor): number {
+    const chill = this.chill.get(a.key) ?? 0;
+    return Math.pow(0.5, chill / CHILL_HALF_SECONDS);
+  }
+
+  private pick(): Attractor | null {
+    return pickWeighted(this.pool, this.rng, (a) => this.weight(a));
+  }
+
+  /** The endpoint of the current line the target point is nearer to. */
+  private nearerEnd(): Attractor | null {
+    if (this.pair === null) return null;
+    return this.w < 0.5 ? this.pair.a : this.pair.b;
   }
 
   /** Where gene `i` is being pulled right now. */
@@ -516,7 +578,7 @@ export class Evolver {
   /** Start from `project` (or a favorite) and begin drifting. */
   start(from: Project | null): boolean {
     if (this.pool.length === 0) return false;
-    const origin = from ?? pickAttractor(this.pool, this.rng)!.project;
+    const origin = from ?? this.pick()!.project;
     this.base = origin;
     this.genes = Array.from({ length: GENE_COUNT }, (_, i) => {
       const x = geneOf(origin, i);
@@ -532,9 +594,9 @@ export class Evolver {
   /** Turn the drift toward another favorite (never the same one twice running). */
   private nextFocus(): void {
     const previous = this.focus;
-    let next = pickAttractor(this.pool, this.rng);
+    let next = this.pick();
     for (let tries = 0; tries < 6 && this.pool.length > 1 && next?.key === previous?.key; tries++) {
-      next = pickAttractor(this.pool, this.rng);
+      next = this.pick();
     }
     this.focus = next;
     this.focusClock = 0;
@@ -577,7 +639,21 @@ export class Evolver {
     // COLD: the particles have gone still. Hurry through rather than linger,
     // and if it stays cold, turn back toward where it was alive.
     const cold = this.temperature.cold;
-    if (cold && this.temperature.coldFor > COLD_TURN_SECONDS && !this.turnedThisSpell) {
+    const end = this.nearerEnd();
+    if (cold && end !== null) {
+      // LEARN: blame the nearer endpoint for this cold.
+      this.chill.set(end.key, (this.chill.get(end.key) ?? 0) + dt);
+    } else if (this.temperature.relative > 0.5 && end !== null) {
+      this.warmAnchor = end;
+    }
+    if (cold && this.temperature.coldFor > COLD_ABANDON_SECONDS && !this.abandonedThisSpell) {
+      // ABANDON: start over from where it was last alive.
+      const anchor =
+        this.warmAnchor !== null && this.pool.includes(this.warmAnchor) ? this.warmAnchor : undefined;
+      this.newLine(spread, anchor);
+      this.abandonedThisSpell = true;
+      this.turnedThisSpell = true;
+    } else if (cold && this.temperature.coldFor > COLD_TURN_SECONDS && !this.turnedThisSpell) {
       this.direction = -this.direction;
       this.turnedThisSpell = true;
     }
@@ -688,7 +764,12 @@ export class Evolver {
       temperature: this.temperature.relative,
       cold: this.temperature.cold,
       ready: this.ready,
-      attractors: this.pool.map(({ key, name, likes }) => ({ key, name, likes })),
+      attractors: this.pool.map(({ key, name, likes }) => ({
+        key,
+        name,
+        likes,
+        chill: Math.round(this.chill.get(key) ?? 0),
+      })),
       focusKey: this.focus?.key ?? -1,
       focusName: this.focus?.name ?? '',
       ...this.nearest(),

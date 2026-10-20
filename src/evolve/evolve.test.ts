@@ -274,3 +274,33 @@ test('cold: the drift hurries, then turns back toward where it was alive', () =>
   ev.step(0.1);
   assert.equal(ev.debug().dir, -dir, 'turns once per cold spell, not every frame');
 });
+
+test('a line that stays cold is abandoned for one starting where it was last warm', () => {
+  const ev = new Evolver(seeded(52));
+  ev.setPool([
+    { name: 'a', project: project(0), likes: 1 },
+    { name: 'b', project: project(1), likes: 1 },
+    { name: 'c', project: project(2), likes: 1 },
+  ]);
+  ev.start(project(0));
+  ev.setTemperature({ relative: 0.9, cold: false, coldFor: 0 });
+  for (let i = 0; i < 5; i++) ev.step(0.1);
+  const warmEnd = ev.debug().w < 0.5 ? ev.debug().a : ev.debug().b;
+  ev.setTemperature({ relative: 0.02, cold: true, coldFor: 16 });
+  ev.step(0.1);
+  assert.equal(ev.debug().a, warmEnd, 'new line starts at the warm anchor');
+  assert.ok(Math.abs(ev.debug().w) < 0.05, 'and from its start');
+});
+
+test('chill: a favorite the drift keeps freezing near gets picked less', () => {
+  const ev = new Evolver(seeded(60));
+  ev.setPool([
+    { name: 'a', project: project(0), likes: 1 },
+    { name: 'b', project: project(1), likes: 1 },
+  ]);
+  ev.start(project(0));
+  ev.setTemperature({ relative: 0.02, cold: true, coldFor: 1 });
+  for (let i = 0; i < 300; i++) ev.step(0.2);
+  const chilled = ev.view().attractors.filter((x) => x.chill > 0);
+  assert.ok(chilled.length > 0, 'some favorite was blamed for the cold');
+});
