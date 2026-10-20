@@ -5,7 +5,7 @@ After=network.target
 [Service]
 ExecStart=/usr/bin/python3 /srv/fluoddity-morph/server/log_receiver.py
 Environment=LOG_DIR=/var/lib/fluoddity-morph/logs
-Environment=PORT=8787
+Environment=PORT=18787
 DynamicUser=yes
 StateDirectory=fluoddity-morph
 Restart=always

@@ -6,7 +6,7 @@ src/telemetry/telemetry.ts) and appends one JSON object per event to a daily
 log: $LOG_DIR/YYYY-MM-DD.jsonl. Each line gets the server receive time and the
 session id. GET /api/health answers "ok".
 
-Stdlib only. Listens on 127.0.0.1 behind nginx, which also rate-limits and caps
+Stdlib only. Listens on 127.0.0.1:18787 behind nginx (8787-8797 are taken on Alpha), which also rate-limits and caps
 body size; this process caps the body again and validates the shape, so a bad
 or hostile request costs nothing and writes nothing.
 """
@@ -19,7 +19,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOG_DIR = os.environ.get("LOG_DIR", "/var/lib/fluoddity-morph/logs")
-PORT = int(os.environ.get("PORT", "8787"))
+PORT = int(os.environ.get("PORT", "18787"))
 MAX_BODY = 256 * 1024
 MAX_EVENTS = 1000
 SID = re.compile(r"^[0-9a-f]{6,32}$")
