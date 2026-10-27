@@ -79,6 +79,10 @@ export class EvolveTab {
   private readonly sliders = new Map<keyof EvolveSettings, { input: HTMLInputElement; value: HTMLElement; spec: SliderSpec }>();
   private readonly list: HTMLElement;
   private listSignature = '';
+  private readonly driftButton: HTMLButtonElement;
+  private readonly driftRate: HTMLInputElement;
+  private readonly driftRateValue: HTMLElement;
+  private readonly driftScale: HTMLElement;
   private rows = new Map<number, HTMLElement>();
 
   constructor(host: HTMLElement, send: (command: Command) => void, mobile: boolean) {
@@ -127,6 +131,45 @@ export class EvolveTab {
     });
     note.title = 'Log a description of what is happening right now';
     marks.append(marksLabel, up, down, note);
+
+    // --- mutation drift: the slider, automated and unbounded --------------
+    const drift = document.createElement('div');
+    drift.style.cssText = SECTION;
+    const driftHead = document.createElement('div');
+    driftHead.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;';
+    const driftTitle = document.createElement('b');
+    driftTitle.textContent = 'Mutation drift';
+    this.driftButton = this.button('∞ Drift', PRIMARY, () => {
+      const running = this.driftButton.dataset['running'] === '1';
+      send({ kind: 'mutationDrift', running: !running });
+    });
+    this.driftButton.title =
+      'Instead of evolving: push Mutation Scale up forever (0, 1, 2, 3...) at the rate below. Touch the mutation slider to stop.';
+    this.driftScale = document.createElement('span');
+    this.driftScale.style.cssText = 'font-variant-numeric:tabular-nums;' + MUTED;
+    driftHead.append(driftTitle, this.driftButton, this.driftScale);
+    const rateRow = document.createElement('label');
+    rateRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:4px;';
+    rateRow.title = 'How fast Mutation Scale climbs, per second';
+    const rateName = document.createElement('span');
+    rateName.textContent = 'rate';
+    rateName.style.cssText = MUTED + 'flex:0 0 92px;';
+    this.driftRate = document.createElement('input');
+    this.driftRate.type = 'range';
+    this.driftRate.min = '0.005';
+    this.driftRate.max = '1';
+    this.driftRate.step = '0.005';
+    this.driftRate.style.cssText = 'flex:1 1 auto;min-width:60px;accent-color:#8ab4f8;';
+    this.driftRateValue = document.createElement('span');
+    this.driftRateValue.style.cssText =
+      'flex:0 0 48px;text-align:right;font-variant-numeric:tabular-nums;' + MUTED;
+    this.driftRate.addEventListener('input', () => {
+      const v = Number(this.driftRate.value);
+      this.driftRateValue.textContent = `${v.toFixed(3)}/s`;
+      send({ kind: 'mutationDrift', rate: v });
+    });
+    rateRow.append(rateName, this.driftRate, this.driftRateValue);
+    drift.append(driftHead, rateRow);
 
     // --- speeds ---------------------------------------------------------------
     const speeds = document.createElement('div');
@@ -205,7 +248,7 @@ export class EvolveTab {
     this.list.style.cssText = 'margin-top:4px;';
     pool.append(poolHead, this.list);
 
-    host.append(this.status, transport, marks, speeds, leash, pool);
+    host.append(this.status, transport, marks, drift, speeds, leash, pool);
     if (mobile) host.style.fontSize = '14px';
   }
 
@@ -363,5 +406,17 @@ export class EvolveTab {
     }
 
     this.drawChart(ev.ranks, ev.progress);
+
+    const md = status.mutationDrift;
+    const driftRunning = md.running ? '1' : '0';
+    if (this.driftButton.dataset['running'] !== driftRunning) {
+      this.driftButton.dataset['running'] = driftRunning;
+      this.driftButton.textContent = md.running ? '■ Stop drift' : '∞ Drift';
+    }
+    this.driftScale.textContent = `scale ${md.scale.toFixed(3)}`;
+    if (document.activeElement !== this.driftRate) {
+      this.driftRate.value = String(md.rate);
+      this.driftRateValue.textContent = `${md.rate.toFixed(3)}/s`;
+    }
   }
 }

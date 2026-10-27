@@ -373,6 +373,14 @@ export class Orchestrator implements CommandBus {
    * The pool persists in localStorage; everything else is session state.
    */
   private readonly evolver = new Evolver();
+  /**
+   * Unbounded mutation drift: the hand on the Mutation Scale slider, automated
+   * and never stopping. Mutation is a FIXED random direction per cohort (seeded
+   * by hashing the rule, the seed and the cohort -- `rule.wgsl`), scaled
+   * linearly, so this walks each cohort straight out along one ray through rule
+   * space, forever. Exclusive with evolve and morph playback.
+   */
+  private readonly drift = { running: false, rate: 0.05 };
 
   /** Built on first use. Reads back the rule a config's particles obey. */
   private deriverPromise: Promise<GpuDeriver | null> | null = null;
@@ -907,9 +915,17 @@ export class Orchestrator implements CommandBus {
       const next = this.evolver.step(dt);
       if (next !== null) this.setProject(next);
     }
+    if (this.drift.running && !this.paused) {
+      const dt = this.recorder !== null ? 1 / RECORDING_FPS : Math.min(input.dt, 0.1);
+      const sel = this.project.selected;
+      const configs = this.project.configs.map((c, i) =>
+        i === sel ? { ...c, mutationScale: c.mutationScale + this.drift.rate * dt } : c,
+      );
+      this.setProject(makeProject({ ...this.project, configs }));
+    }
     this.telemetry.tick(
       performance.now(),
-      (this.evolver.running || this.morph.playing) && !this.paused,
+      (this.evolver.running || this.morph.playing || this.drift.running) && !this.paused,
       () => this.snapshot(),
     );
 
@@ -2232,9 +2248,16 @@ export class Orchestrator implements CommandBus {
 
   /** Stop evolve and morph playback, saying so if either was running. */
   private stopAutomation(): void {
-    const was = this.evolver.running ? 'Evolve' : this.morph.playing ? 'Morph playback' : null;
+    const was = this.evolver.running
+      ? 'Evolve'
+      : this.morph.playing
+        ? 'Morph playback'
+        : this.drift.running
+          ? 'Mutation drift'
+          : null;
     this.evolver.stop();
     this.morph.stop();
+    this.drift.running = false;
     if (was !== null) {
       this.notify(`${was} stopped`);
       this.telemetry.event('automationStopped', { what: was });
@@ -3191,6 +3214,7 @@ export class Orchestrator implements CommandBus {
           return;
         }
         this.morph.stop();
+        this.drift.running = false;
         // From what is on screen, baked, so the first moves start where you are.
         const from = this.project;
         void this.bake(from, true)
@@ -3257,6 +3281,31 @@ export class Orchestrator implements CommandBus {
         clearPool();
         void this.initPool();
         return;
+
+      case 'mutationDrift': {
+        if (command.rate !== undefined && Number.isFinite(command.rate)) {
+          this.drift.rate = Math.max(0, command.rate);
+        }
+        if (command.running === undefined) return;
+        if (!command.running) {
+          if (this.drift.running) this.telemetry.event('mutationDriftStop');
+          this.drift.running = false;
+          return;
+        }
+        // A GENERATED rule is never mutated (`rule.wgsl`), so drifting it would
+        // change a number and nothing on screen.
+        const rule = selectedConfig(this.project).rule;
+        if ([0, 1, 2, 3, 44, 45, 46, 47].every((i) => rule[i] === 0)) {
+          this.notify('This rule is generated from its seed, so mutation has nothing to act on -- click a particle to adopt its rule, then drift');
+          return;
+        }
+        this.evolver.stop();
+        this.morph.stop();
+        this.drift.running = true;
+        this.notify('Mutation drift -- climbing without bound');
+        this.telemetry.event('mutationDriftStart', { rate: this.drift.rate });
+        return;
+      }
 
       case 'logMark': {
         const note = command.note?.trim().slice(0, 500);
@@ -3885,6 +3934,11 @@ export class Orchestrator implements CommandBus {
       checkpoints: this.checkpoints.views(),
       morph: this.morph.view(),
       evolve: this.evolver.view(),
+      mutationDrift: {
+        running: this.drift.running,
+        rate: this.drift.rate,
+        scale: selectedConfig(this.project).mutationScale,
+      },
       canRevert: this.configOrigin !== null,
       canSave: this.store.writable,
 

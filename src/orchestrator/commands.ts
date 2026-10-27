@@ -535,6 +535,12 @@ export type Command =
   | { readonly kind: 'evolveLayeredSpeeds' }
   /** Forget the stored pool and re-seed it from the save library. */
   | { readonly kind: 'evolveResetPool' }
+  /**
+   * UNBOUNDED MUTATION DRIFT: Mutation Scale climbs forever at `rate` per
+   * second (0 -> 1 -> 2 -> ...), past the slider's range. Either field may be
+   * sent alone: `rate` retunes, `running` starts or stops.
+   */
+  | { readonly kind: 'mutationDrift'; readonly running?: boolean; readonly rate?: number }
   /** 👍 / 👎 / 📝: log a verdict on what is on screen, with a full snapshot. */
   | { readonly kind: 'logMark'; readonly mark: 'up' | 'down' | 'note'; readonly note?: string };
 
@@ -778,6 +784,8 @@ export interface Status {
   readonly morph: MorphView;
   /** Auto-evolve state, for the Evolve tab. */
   readonly evolve: EvolveView;
+  /** Unbounded mutation drift, for the Evolve tab. `scale` is the live Mutation Scale. */
+  readonly mutationDrift: { readonly running: boolean; readonly rate: number; readonly scale: number };
   /**
    * Whether the project has a storage origin to revert to.
    *
