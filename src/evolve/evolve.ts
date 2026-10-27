@@ -52,7 +52,7 @@ interface ScalarSpec {
   readonly hi: number;
   readonly label: string;
   /** Rough family, for the "layers" speed preset and the gene chart's colors. */
-  readonly family: 'sensor' | 'force' | 'color' | 'trail';
+  readonly family: 'sensor' | 'force' | 'color' | 'trail' | 'mutation';
 }
 
 export const SCALARS: readonly ScalarSpec[] = [
@@ -68,6 +68,10 @@ export const SCALARS: readonly ScalarSpec[] = [
   { field: 'colorOffset', source: 'config', lo: 0, hi: 1, label: 'hue', family: 'color' },
   { field: 'trailPersistence', source: 'world', lo: 0.5, hi: 0.999, label: 'persist', family: 'trail' },
   { field: 'trailDiffusion', source: 'world', lo: 0, hi: 1, label: 'diffuse', family: 'trail' },
+  // How big each cohort's twist on the rule is. Carried so multi-cohort saves
+  // keep their spread of behaviours; the twists themselves are steady while
+  // evolving (a negative seed -- see `current` and `rule.wgsl`).
+  { field: 'mutationScale', source: 'config', lo: 0, hi: 1, label: 'mutation', family: 'mutation' },
 ];
 
 export type GeneFamily = 'rule' | 'physics' | 'color' | 'trail';
@@ -111,6 +115,7 @@ export const GENES: readonly GeneDef[] = [
   { label: 'hue', family: 'color', ruleStart: null, fields: [field('colorOffset')] },
   { label: 'persist', family: 'trail', ruleStart: null, fields: [field('trailPersistence')] },
   { label: 'diffuse', family: 'trail', ruleStart: null, fields: [field('trailDiffusion')] },
+  { label: 'mutation', family: 'rule', ruleStart: null, fields: [field('mutationScale')] },
 ];
 
 export const GENE_COUNT = GENES.length;
@@ -381,6 +386,28 @@ export function durationFor(rank: number, s: EvolveSettings): number {
   return lo * Math.pow(hi / lo, r);
 }
 
+/**
+ * The settings that cannot blend -- whole numbers and switches -- so they SWITCH
+ * from one favorite's value to the next halfway along each leg (path mode) or
+ * line (leash mode), in the quick middle of the crossing.
+ */
+interface Discrete {
+  readonly cohorts: number;
+  readonly initialConditions: number;
+  readonly cohortFences: boolean;
+  readonly colorByCohort: boolean;
+}
+
+function discreteOf(project: Project): Discrete {
+  const c = project.configs[0]!;
+  return {
+    cohorts: c.cohorts,
+    initialConditions: c.initialConditions,
+    cohortFences: c.cohortFences,
+    colorByCohort: c.colorByCohort,
+  };
+}
+
 interface GeneState {
   /** Where the gene is. */
   x: number[];
@@ -459,7 +486,15 @@ export class Evolver {
    * (per gene) to the favorite `to`, `u` of the way along. `origin` is the
    * favorite it just arrived at, when the leg began at one.
    */
-  private leg: { from: number[][]; to: Attractor; origin: Attractor | null; u: number } | null = null;
+  private leg: {
+    from: number[][];
+    fromDiscrete: Discrete;
+    to: Attractor;
+    origin: Attractor | null;
+    u: number;
+  } | null = null;
+  /** The cohort count, layout and cohort switches in force right now. */
+  private discrete: Discrete = { cohorts: 1, initialConditions: 2, cohortFences: false, colorByCohort: false };
   private lastSpread: number[] = [];
   /** Measured motion, from the Orchestrator's temperature probe. */
   private temperature = { relative: 1, cold: false, coldFor: 0 };
@@ -608,7 +643,10 @@ export class Evolver {
     // One draw for the whole group, scaled per setting: the group shifts as a
     // piece rather than each setting jittering its own way.
     const n = gaussian(this.rng);
-    return gene.fields.map((spec) => this.settings.settingWander * (spec.hi - spec.lo) * n);
+    // Mutation does not wander: a favorite with no twist should never grow one.
+    return gene.fields.map((spec) =>
+      spec.family === 'mutation' ? 0 : this.settings.settingWander * (spec.hi - spec.lo) * n,
+    );
   }
 
   /** Feed in the latest measured temperature (see `telemetry/temperature.ts`). */
@@ -676,6 +714,7 @@ export class Evolver {
     if (this.pool.length === 0) return false;
     const origin = from ?? this.pick()!.project;
     this.base = origin;
+    this.discrete = discreteOf(origin);
     this.genes = Array.from({ length: GENE_COUNT }, (_, i) => {
       const x = geneOf(origin, i);
       return { x, v: x.map(() => 0), offset: x.map(() => 0), offsetGoal: x.map(() => 0), own: null };
@@ -725,7 +764,7 @@ export class Evolver {
    */
   private startLeg(to: Attractor, origin: Attractor | null): void {
     const spread = this.ruleSpread();
-    this.leg = { from: this.genes.map((g) => [...g.x]), to, origin, u: 0 };
+    this.leg = { from: this.genes.map((g) => [...g.x]), fromDiscrete: this.discrete, to, origin, u: 0 };
     this.genes.forEach((g, i) => {
       g.own = null;
       g.offsetGoal = this.offsetFor(i, spread);
@@ -802,6 +841,7 @@ export class Evolver {
 
     const e = lingerEase(leg.u, s.linger);
     const bump = Math.sin(Math.PI * e);
+    this.discrete = e < 0.5 ? leg.fromDiscrete : discreteOf(leg.to.project);
     this.genes.forEach((g, i) => {
       const from = leg.from[i]!;
       const to = geneOf(leg.to.project, i);
@@ -885,6 +925,8 @@ export class Evolver {
       if (focusChanged) this.newLine(spread);
     }
 
+    if (this.pair !== null) this.discrete = discreteOf((this.w < 0.5 ? this.pair.a : this.pair.b).project);
+
     // EVERY GENE IS A SPRING chasing the point. Critically damped, so a still
     // target is reached without overshoot; velocity carries through every move
     // of the target, so the creature never stops to think.
@@ -937,9 +979,16 @@ export class Evolver {
       }
     });
     config['rule'] = rule;
-    // Baked attractors: no mutation, one cohort, so what blends is what shows.
-    config['mutationScale'] = 0;
-    config['cohorts'] = 1;
+    // COHORTS ARE CARRIED: the count, layout and cohort switches of the
+    // favorite in force, and mutation scale as a gene (above). The seed is
+    // written NEGATIVE, which tells the shader to use steady per-cohort twists
+    // rather than ones re-drawn from the moving rule (`rule.wgsl`). A baked
+    // favorite has mutation 0, so it shows exactly as it did.
+    config['cohorts'] = this.discrete.cohorts;
+    config['initialConditions'] = this.discrete.initialConditions;
+    config['cohortFences'] = this.discrete.cohortFences;
+    config['colorByCohort'] = this.discrete.colorByCohort;
+    config['mutationSeed'] = -Math.max(1e-6, Math.abs(baseConfig.mutationSeed));
     return makeProject({
       configs: [config as unknown as SimulationConfig],
       world: world as unknown as WorldSettings,

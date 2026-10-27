@@ -113,11 +113,24 @@ fn get_cohort(index: u32, config: ConfigData, entity_count: u32) -> f32 {
 //
 // GLSL took `inout Rule`; WGSL has no inout, so the mutated rule comes back as
 // a return value and the call site assigns it.
-fn mutate_rule(current_rule: Rule, amount: f32, cohort: f32) -> Rule {
+//
+// STABLE MODE (`stable`): the seed skips the hash of the rule and is the
+// cohort seed alone. The usual seed hashes the rule's own coefficients, which
+// is chaotic -- so a rule that is MOVING (the evolver blending between
+// favorites) would draw a fresh twist every frame: flicker, not motion. With
+// the hash left out, each cohort's twist is a fixed direction that holds while
+// the rule moves. Only the evolver asks for it (see `derive_entity_rule`); for
+// every saved state the branch below is not taken and the seed is computed
+// exactly as before.
+fn mutate_rule(current_rule: Rule, amount: f32, cohort: f32, stable: bool) -> Rule {
     var rule = current_rule;
-    let seed = hash(rule.centers[4].frequency.xy
-                    + rule.centers[7].amplitude.yx
-                    + rule.centers[1].frequency.zw) + cohort;
+    var rule_hash = 0.0;
+    if (!stable) {
+        rule_hash = hash(rule.centers[4].frequency.xy
+                         + rule.centers[7].amplitude.yx
+                         + rule.centers[1].frequency.zw);
+    }
+    let seed = rule_hash + cohort;
 
     for (var i = 0; i < 10; i++) {
         // Operand order kept as the GLSL writes it (`-.5 + vec2(...)`), since
@@ -154,8 +167,15 @@ fn mutate_rule(current_rule: Rule, amount: f32, cohort: f32) -> Rule {
 //
 // GLSL's `==` on a vector is whole-vector equality returning a scalar bool;
 // WGSL's is componentwise and returns vec4<bool>, hence all().
+//
+// A NEGATIVE MUTATION SEED MEANS STABLE MODE (see `mutate_rule`). Seeds are
+// drawn from [0,1], so no saved state has one; the evolver writes -|seed| to
+// ask for steady per-cohort twists while it blends the rule. The magnitude is
+// what seeds both branches, so a non-negative seed behaves exactly as before.
 fn derive_entity_rule(rule_in: Rule, cohort: f32, config: ConfigData) -> Rule {
-    let rule_seed = cfg_mutation_seed(config) + floor(cohort);
+    let raw_seed = cfg_mutation_seed(config);
+    let stable = raw_seed < 0.0;
+    let rule_seed = abs(raw_seed) + floor(cohort);
 
     // If a few arbitrary coefficients are exactly 0, then assume the rule is
     // all 0s (no target) and generate a random rule instead. Zeroing is how the
@@ -168,5 +188,5 @@ fn derive_entity_rule(rule_in: Rule, cohort: f32, config: ConfigData) -> Rule {
     }
 
     // Each cohort gets a random mutation.
-    return mutate_rule(rule_in, cfg_mutation_scale(config), rule_seed);
+    return mutate_rule(rule_in, cfg_mutation_scale(config), rule_seed, stable);
 }

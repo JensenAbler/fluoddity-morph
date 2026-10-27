@@ -2083,6 +2083,24 @@ export class Orchestrator implements CommandBus {
    * A generated (all-zero) rule bakes into the rule the GPU generated, which is
    * what makes those blendable as well.
    */
+  /**
+   * Bake for the attractor pool, KEEPING COHORTS where they mean something. A
+   * multi-cohort save with mutation and an authored rule keeps its rule,
+   * mutation scale, cohort count and layout, and the evolver carries them
+   * (with steady per-cohort twists -- see `rule.wgsl`'s stable mode).
+   * Everything else bakes to one cohort as before. A generated (all-zero)
+   * rule's cohorts each obey a DIFFERENT generated rule, which one rule cannot
+   * carry, so those still bake to cohort 0.
+   */
+  private async bakeAttractor(project: Project): Promise<Project> {
+    const c = project.configs[0];
+    const generated = c !== undefined && [0, 1, 2, 3, 44, 45, 46, 47].every((i) => c.rule[i] === 0);
+    if (c !== undefined && c.cohorts > 1 && c.mutationScale !== 0 && !generated) {
+      return makeProject({ configs: [c], world: project.world, name: project.name });
+    }
+    return this.bake(project, true);
+  }
+
   private async bake(project: Project, single: boolean): Promise<Project> {
     // The shader's own test (`rule.wgsl`): these two lanes all zero = generate.
     const generatedOnGpu = (rule: readonly number[]): boolean =>
@@ -2157,7 +2175,7 @@ export class Orchestrator implements CommandBus {
         const parsed = fromDocument(save.document, save.name);
         const project = makeProject({ configs: parsed.configs, world: parsed.world, name: save.name });
         const likes = SEED_LIKES[save.name.toLowerCase().replace(/[-_]+/g, ' ').trim()] ?? 1;
-        seeds.push({ name: save.name, likes, project: await this.bake(project, true) });
+        seeds.push({ name: save.name, likes, project: await this.bakeAttractor(project) });
       } catch (err: unknown) {
         console.warn(`Skipped seed attractor ${save.name}:`, err);
       }
@@ -2186,7 +2204,7 @@ export class Orchestrator implements CommandBus {
             const parsed = await this.store.read(entry);
             const project = makeProject({ configs: parsed.configs, world: parsed.world, name });
             const likes = SEED_LIKES[norm(name)] ?? 1;
-            const baked = await this.bake(project, true);
+            const baked = await this.bakeAttractor(project);
             // A rule still all-zero here could not be baked (it is generated
             // on the GPU from its seed); blending toward zeros would be noise.
             if (baked.configs[0]!.rule.every((v) => v === 0)) continue;
@@ -3220,7 +3238,7 @@ export class Orchestrator implements CommandBus {
         this.drift.running = false;
         // From what is on screen, baked, so the first moves start where you are.
         const from = this.project;
-        void this.bake(from, true)
+        void this.bakeAttractor(from)
           .catch(() => from)
           .then((baked) => {
             if (!this.evolver.start(baked)) return;
@@ -3240,7 +3258,7 @@ export class Orchestrator implements CommandBus {
       case 'evolveLike': {
         const captured = this.project;
         const name = `Liked ${String(++this.likeSerial)}`;
-        void this.bake(captured, true).then((baked) => {
+        void this.bakeAttractor(captured).then((baked) => {
           this.evolver.add(name, baked, 1);
           this.persistPool();
           this.notify(`♥ added "${name}" to the attractors`);

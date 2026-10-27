@@ -446,3 +446,25 @@ test('linger: an S-curve that spends its time near the favorites', () => {
   }
   assert.ok(near > 600, String(near));
 });
+
+test('cohorts are carried: count switches mid-leg, mutation blends, seed asks for steady twists', () => {
+  const ev = new Evolver(seeded(91));
+  ev.settings.motion = 'path';
+  ev.settings.ruleWander = 0;
+  ev.settings.settingWander = 0;
+  ev.settings.linger = 0;
+  ev.settings.strideSeconds = 10;
+  const many = makeProject({
+    configs: [{ ...project(1).configs[0]!, cohorts: 16, mutationScale: 0.2, mutationSeed: 0.3, initialConditions: 3 }],
+    world: makeWorldSettings(),
+  });
+  ev.setPool([{ name: 'many', project: many, likes: 1 }]);
+  assert.ok(ev.start(project(0)));
+  let c = ev.step(0.05)!.configs[0]!;
+  assert.equal(c.cohorts, 1, 'starts with the start state\'s cohorts');
+  assert.ok(c.mutationSeed < 0, 'a negative seed asks the shader for steady twists');
+  for (let f = 0; f < 120; f++) c = ev.step(0.05)!.configs[0]!; // 6 s: past halfway
+  assert.equal(c.cohorts, 16, 'switched to the favorite\'s cohort count');
+  assert.equal(c.initialConditions, 3, 'and its starting layout');
+  assert.ok(c.mutationScale > 0.1 && c.mutationScale < 0.2, `mutation blends: ${c.mutationScale}`);
+});
