@@ -2165,15 +2165,18 @@ export class Orchestrator implements CommandBus {
     // PLUS EVERY OTHER SAVED STATE the app knows: the bundled Jensen category
     // first, then Core and any other preset category -- skipping names this
     // browser already has. (Seeding from the browser's saves alone meant one
-    // import gave a pool of one.) The Archive is left out: it is a record of
-    // past experiments, not a set of favorites, and it is large.
+    // import gave a pool of one.) THE ARCHIVE IS INCLUDED TOO, last, so a name
+    // it shares with a curated category resolves to the curated copy. (It used
+    // to be left out as "past experiments, not favorites"; Jensen wants a reset
+    // pool to hold everything, and muting with − is how to prune it.)
     {
       const norm = (n: string): string => n.toLowerCase().replace(/[-_]+/g, ' ').trim();
       const have = new Set(seeds.map((x) => norm(x.name)));
       const { categories } = this.store.catalog();
+      const rank = (c: string): number => (c === HOME_CATEGORY ? 0 : c === ARCHIVE_CATEGORY ? 2 : 1);
       const order = Object.keys(categories)
-        .filter((c) => c !== CUSTOM_CATEGORY && c !== ARCHIVE_CATEGORY)
-        .sort((a, b) => Number(b === HOME_CATEGORY) - Number(a === HOME_CATEGORY));
+        .filter((c) => c !== CUSTOM_CATEGORY)
+        .sort((a, b) => rank(a) - rank(b));
       for (const category of order) {
         for (const name of categories[category] ?? []) {
           if (have.has(norm(name))) continue;
