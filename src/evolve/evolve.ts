@@ -207,6 +207,12 @@ export interface EvolveSettings {
    */
   familyHop: number;
   /**
+   * 0..1, path mode: the S-curve of each leg. 0 = constant speed. Higher =
+   * longer at each favorite, a quicker crossing between them (the middle is
+   * the steep part), easing out of one favorite and into the next.
+   */
+  linger: number;
+  /**
    * Seconds for colors to settle on a new favorite's palette. Color follows
    * the FOCUS favorite on this slow clock, not the moving line -- the log had
    * "worn out from how fast and often the color changes".
@@ -233,6 +239,7 @@ export const DEFAULT_SETTINGS: EvolveSettings = {
   strideSeconds: 25,
   colorSeconds: 240,
   familyHop: 0.15,
+  linger: 0.4,
 };
 
 /**
@@ -282,6 +289,21 @@ function gaussian(rng: Rng): number {
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
+}
+
+/**
+ * The S-curve a path-mode leg follows: how far along the leg the creature is
+ * when `u` of the leg's TIME has passed. linger 0 is a straight line; higher
+ * values flatten both ends (time spent near the favorites) and steepen the
+ * middle. linger 0.4 spends about two-thirds of every leg within 10% of a
+ * favorite.
+ */
+export function lingerEase(u: number, linger: number): number {
+  const t = clamp(u, 0, 1);
+  const p = 1 + 5 * clamp(linger, 0, 1);
+  const a = Math.pow(t, p);
+  const b = Math.pow(1 - t, p);
+  return a + b === 0 ? t : a / (a + b);
 }
 
 /** A gene's value as a flat vector (8 floats for a rule center, one per setting otherwise). */
@@ -778,11 +800,12 @@ export class Evolver {
     }
     this.w = leg.u;
 
-    const bump = Math.sin(Math.PI * leg.u);
+    const e = lingerEase(leg.u, s.linger);
+    const bump = Math.sin(Math.PI * e);
     this.genes.forEach((g, i) => {
       const from = leg.from[i]!;
       const to = geneOf(leg.to.project, i);
-      g.x = from.map((a, k) => a + leg.u * ((to[k] ?? a) - a) + bump * (g.offset[k] ?? 0));
+      g.x = from.map((a, k) => a + e * ((to[k] ?? a) - a) + bump * (g.offset[k] ?? 0));
       clampGene(i, g.x);
       g.v = g.x.map((x, k) => (dt > 0 ? (x - (prev[i]![k] ?? x)) / dt : 0));
     });

@@ -10,6 +10,7 @@ import {
   SCALARS,
   durationFor,
   familyOf,
+  lingerEase,
   pickAttractor,
 } from './evolve.ts';
 import { SEED_LIKES } from './seedPool.ts';
@@ -389,6 +390,7 @@ test('path mode: walks straight to each favorite, arrives, and moves on without 
   ev.settings.ruleWander = 0;
   ev.settings.settingWander = 0;
   ev.settings.strideSeconds = 10;
+  ev.settings.linger = 0;
   ev.setPool([
     { name: 'a', project: project(0, 0.4), likes: 1 },
     { name: 'b', project: project(1, 0.6), likes: 1 },
@@ -421,4 +423,26 @@ test('path mode: walks straight to each favorite, arrives, and moves on without 
   for (const d of arrivals) assert.ok(d <= 0.021, `missed a favorite by ${d}`);
   // ...and nothing ever jumped: at most 2 units per 10 s leg, so 0.01 a frame.
   assert.ok(maxStep <= 0.0101, `jump of ${maxStep}`);
+});
+
+test('linger: an S-curve that spends its time near the favorites', () => {
+  for (const l of [0, 0.4, 1]) {
+    assert.equal(lingerEase(0, l), 0);
+    assert.equal(lingerEase(1, l), 1);
+    assert.ok(Math.abs(lingerEase(0.5, l) - 0.5) < 1e-12);
+    let prev = 0;
+    for (let u = 0.01; u <= 1; u += 0.01) {
+      const e = lingerEase(u, l);
+      assert.ok(e >= prev, `not monotonic at linger ${l}`);
+      prev = e;
+    }
+  }
+  assert.ok(Math.abs(lingerEase(0.3, 0) - 0.3) < 1e-12, 'linger 0 is constant speed');
+  // Default: most of the leg's time within 10% of one favorite or the other.
+  let near = 0;
+  for (let i = 0; i < 1000; i++) {
+    const e = lingerEase((i + 0.5) / 1000, 0.4);
+    if (e < 0.1 || e > 0.9) near++;
+  }
+  assert.ok(near > 600, String(near));
 });

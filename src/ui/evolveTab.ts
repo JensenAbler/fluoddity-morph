@@ -61,6 +61,7 @@ const LEASH_SLIDERS: readonly SliderSpec[] = [
   { key: 'focusSeconds', label: 'focus', min: 5, max: 180, step: 5, unit: 's', title: 'Seconds the drift stays centred on one favorite before turning toward another' },
   { key: 'familyHop', label: 'family hops', min: 0, max: 1, step: 0.05, title: 'Chance that a change of focus jumps to a different physics family. Hops are quick and deliberate; between hops the drift stays within one family' },
   { key: 'strideSeconds', label: 'stride', min: 5, max: 180, step: 5, unit: 's', title: 'Seconds for the drift to travel from one favorite to the other. Longer = more committed, slower journeys' },
+  { key: 'linger', label: 'linger', min: 0, max: 1, step: 0.05, title: 'Path mode: 0 = constant speed between favorites. Higher = more time AT each favorite and a quicker crossing between them' },
 ];
 
 function fmt(v: number, step: number, unit = ''): string {
