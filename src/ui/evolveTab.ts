@@ -76,6 +76,7 @@ export class EvolveTab {
   private readonly restartBox: HTMLInputElement;
   private readonly chart: HTMLCanvasElement;
   private readonly modeSelect: HTMLSelectElement;
+  private readonly motionSelect: HTMLSelectElement;
   private readonly sliders = new Map<keyof EvolveSettings, { input: HTMLInputElement; value: HTMLElement; spec: SliderSpec }>();
   private readonly list: HTMLElement;
   private listSignature = '';
@@ -114,6 +115,26 @@ export class EvolveTab {
     restart.append(this.restartBox, document.createTextNode('restart sim'));
     restart.title = 'Reset the particles when evolving starts';
     transport.append(this.startButton, this.likeButton, restart);
+    this.motionSelect = document.createElement('select');
+    this.motionSelect.style.cssText = BUTTON;
+    this.motionSelect.title =
+      'Path: the whole creature walks to each favorite, arrives, and moves straight on. Leash: each part chases on its own spring and favorites are only passed near.';
+    for (const [v, l] of [
+      ['path', 'Path — walk through favorites'],
+      ['leash', 'Leash — springs chase'],
+    ] as const) {
+      const o = document.createElement('option');
+      o.value = v;
+      o.textContent = l;
+      this.motionSelect.append(o);
+    }
+    this.motionSelect.addEventListener('change', () =>
+      send({
+        kind: 'evolveSettings',
+        settings: { motion: this.motionSelect.value === 'leash' ? 'leash' : 'path' },
+      }),
+    );
+    transport.append(this.motionSelect);
 
     // --- marks: verdicts for the server log --------------------------------
     const marks = document.createElement('div');
@@ -385,6 +406,7 @@ export class EvolveTab {
     this.startButton.style.opacity = this.startButton.disabled ? '0.5' : '1';
 
     if (document.activeElement !== this.modeSelect) this.modeSelect.value = ev.settings.mode;
+    if (document.activeElement !== this.motionSelect) this.motionSelect.value = ev.settings.motion;
     for (const { input, value, spec } of this.sliders.values()) {
       if (document.activeElement === input) continue;
       const v = ev.settings[spec.key] as number;

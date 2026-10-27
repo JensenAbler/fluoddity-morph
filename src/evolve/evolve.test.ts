@@ -49,6 +49,7 @@ function project(ruleValue: number, gain = 0.4) {
 
 test('likes weight the pick', () => {
   const ev = new Evolver(seeded(3));
+  ev.settings.motion = 'leash';
   ev.setPool([
     { name: 'a', project: project(0), likes: 1 },
     { name: 'b', project: project(1), likes: 9 },
@@ -69,6 +70,7 @@ test('durations span min..max and skew shifts them', () => {
 
 test('the rule stays on its leash: always near some attractor', () => {
   const ev = new Evolver(seeded(11));
+  ev.settings.motion = 'leash';
   ev.setPool([
     { name: 'a', project: project(0), likes: 1 },
     { name: 'b', project: project(1), likes: 1 },
@@ -83,6 +85,7 @@ test('the rule stays on its leash: always near some attractor', () => {
 
 test('settings stay inside their slider ranges and output is baked', () => {
   const ev = new Evolver(seeded(5));
+  ev.settings.motion = 'leash';
   ev.setPool([{ name: 'a', project: project(0.5, 7.9), likes: 1 }]);
   ev.settings.settingWander = 0.5;
   ev.start(null);
@@ -100,6 +103,7 @@ test('settings stay inside their slider ranges and output is baked', () => {
 
 test('static ranks hold still, fluid ranks wander', () => {
   const ev = new Evolver(seeded(9));
+  ev.settings.motion = 'leash';
   ev.setPool([{ name: 'a', project: project(0), likes: 1 }]);
   ev.settings.mode = 'static';
   ev.start(null);
@@ -120,6 +124,7 @@ test('Indigo Flame Society seeds with three likes', () => {
 
 test('it never rests: genes are always in motion', () => {
   const ev = new Evolver(seeded(21));
+  ev.settings.motion = 'leash';
   ev.setPool([
     { name: 'a', project: project(0), likes: 1 },
     { name: 'b', project: project(1), likes: 1 },
@@ -135,6 +140,7 @@ test('it never rests: genes are always in motion', () => {
 
 test('exploration 0 and no wander: every target is exactly a favorite', () => {
   const ev = new Evolver(seeded(8));
+  ev.settings.motion = 'leash';
   ev.setPool([
     { name: 'a', project: project(0), likes: 1 },
     { name: 'b', project: project(1), likes: 1 },
@@ -152,6 +158,7 @@ test('exploration 0 and no wander: every target is exactly a favorite', () => {
 
 test('exploration reaches past the favorites, but stays leashed', () => {
   const ev = new Evolver(seeded(13));
+  ev.settings.motion = 'leash';
   ev.setPool([
     { name: 'a', project: project(0), likes: 1 },
     { name: 'b', project: project(1), likes: 1 },
@@ -171,6 +178,7 @@ test('exploration reaches past the favorites, but stays leashed', () => {
 
 test('momentum: velocity never collapses to zero while the point glides', () => {
   const ev = new Evolver(seeded(31));
+  ev.settings.motion = 'leash';
   ev.setPool([
     { name: 'a', project: project(0), likes: 1 },
     { name: 'b', project: project(1), likes: 1 },
@@ -193,6 +201,7 @@ test('momentum: velocity never collapses to zero while the point glides', () => 
 
 test('♥0 mutes an attractor: never picked while others have likes', () => {
   const ev = new Evolver(seeded(5));
+  ev.settings.motion = 'leash';
   ev.setPool([
     { name: 'muted', project: project(0), likes: 0 },
     { name: 'liked', project: project(1), likes: 1 },
@@ -205,6 +214,7 @@ test('physics settings never extrapolate past the favorites', () => {
   const low = project(0, 0.4);
   const high = project(1, 6);
   const ev = new Evolver(seeded(17));
+  ev.settings.motion = 'leash';
   ev.setPool([
     { name: 'a', project: low, likes: 1 },
     { name: 'b', project: high, likes: 1 },
@@ -236,6 +246,7 @@ test('physics settings travel together: drag and force stay on the line between 
   const a = mk(0.5, 0.15);
   const b = mk(0.125, 0.94);
   const ev = new Evolver(seeded(23));
+  ev.settings.motion = 'leash';
   ev.setPool([
     { name: 'a', project: a, likes: 1 },
     { name: 'b', project: b, likes: 1 },
@@ -253,6 +264,7 @@ test('physics settings travel together: drag and force stay on the line between 
 
 test('cold: the drift hurries, then turns back toward where it was alive', () => {
   const ev = new Evolver(seeded(41));
+  ev.settings.motion = 'leash';
   ev.setPool([
     { name: 'a', project: project(0), likes: 1 },
     { name: 'b', project: project(1), likes: 1 },
@@ -278,6 +290,7 @@ test('cold: the drift hurries, then turns back toward where it was alive', () =>
 
 test('a line that stays cold is abandoned for one starting where it was last warm', () => {
   const ev = new Evolver(seeded(52));
+  ev.settings.motion = 'leash';
   ev.setPool([
     { name: 'a', project: project(0), likes: 1 },
     { name: 'b', project: project(1), likes: 1 },
@@ -295,6 +308,7 @@ test('a line that stays cold is abandoned for one starting where it was last war
 
 test('chill: a favorite the drift keeps freezing near gets picked less', () => {
   const ev = new Evolver(seeded(60));
+  ev.settings.motion = 'leash';
   ev.setPool([
     { name: 'a', project: project(0), likes: 1 },
     { name: 'b', project: project(1), likes: 1 },
@@ -330,6 +344,7 @@ test('physics families: sign pattern of sideways push and sensors, plus the engi
 
 test('with hops off, the drift never passes through a family boundary', () => {
   const ev = new Evolver(seeded(70));
+  ev.settings.motion = 'leash';
   ev.setPool([
     { name: 'f1', project: famProject(0, -0.7, 0.07, 0.37), likes: 1 },
     { name: 'f2', project: famProject(1, -0.7, 0.2, 0.37), likes: 1 },
@@ -347,6 +362,7 @@ test('with hops off, the drift never passes through a family boundary', () => {
 
 test('a hop crosses families quickly, without lingering in between', () => {
   const ev = new Evolver(seeded(71));
+  ev.settings.motion = 'leash';
   ev.setPool([
     { name: 'f1', project: famProject(0, -0.7, 0.07, 0.37), likes: 1 },
     { name: 'b1', project: famProject(1, 0.5, -0.18, 0.12), likes: 1 },
@@ -365,4 +381,44 @@ test('a hop crosses families quickly, without lingering in between', () => {
     maxRun = Math.max(maxRun, between);
   }
   assert.ok(maxRun * 0.1 < 3, `lingered ${(maxRun * 0.1).toFixed(1)}s in the switched-off zone`);
+});
+
+test('path mode: walks straight to each favorite, arrives, and moves on without a jump', () => {
+  const ev = new Evolver(seeded(77));
+  ev.settings.motion = 'path';
+  ev.settings.ruleWander = 0;
+  ev.settings.settingWander = 0;
+  ev.settings.strideSeconds = 10;
+  ev.setPool([
+    { name: 'a', project: project(0, 0.4), likes: 1 },
+    { name: 'b', project: project(1, 0.6), likes: 1 },
+    { name: 'c', project: project(-1, 0.5), likes: 1 },
+  ]);
+  assert.ok(ev.start(project(0.5, 0.45)));
+  const rules = new Map(ev.attractors.map((a) => [a.name, a.project.configs[0]!.rule]));
+  const dt = 0.05;
+  let prev = ev.current()!.configs[0]!.rule;
+  let dest = ev.debug().b;
+  let closest = Infinity;
+  const arrivals: number[] = [];
+  let maxStep = 0;
+  for (let f = 0; f < 1200; f++) {
+    const rule = ev.step(dt)!.configs[0]!.rule;
+    maxStep = Math.max(maxStep, ...rule.map((v, k) => Math.abs(v - prev[k]!)));
+    const now = ev.debug().b;
+    if (now !== dest) {
+      if (f > 0) arrivals.push(closest);
+      dest = now;
+      closest = Infinity;
+    }
+    const target = rules.get(dest)!;
+    closest = Math.min(closest, Math.max(...rule.map((v, k) => Math.abs(v - target[k]!))));
+    prev = rule;
+  }
+  // 60 s at 10 s a leg: about six favorites reached.
+  assert.ok(arrivals.length >= 5, `arrivals ${arrivals.length}`);
+  // Each favorite was actually reached (within one frame's travel)...
+  for (const d of arrivals) assert.ok(d <= 0.021, `missed a favorite by ${d}`);
+  // ...and nothing ever jumped: at most 2 units per 10 s leg, so 0.01 a frame.
+  assert.ok(maxStep <= 0.0101, `jump of ${maxStep}`);
 });

@@ -159,7 +159,23 @@ export interface Attractor {
 
 export type SpeedMode = 'static' | 'fluid';
 
+/**
+ * How the creature moves.
+ *
+ *   path   THE CREATURE WALKS THE PATH THE TARGET DRAWS. Like a finger drawing
+ *          a line: every part of the creature travels together, straight from
+ *          where it is to the next favorite, ARRIVES there exactly, and sets off
+ *          for the next one in the same moment -- no waiting, no stopping. One
+ *          leg takes `strideSeconds`.
+ *   leash  The older design: each gene is a spring chasing a target point on
+ *          its own clock. Momentum, but the target leaves each favorite before
+ *          the slow genes catch up, so favorites are passed near, never reached.
+ */
+export type MotionMode = 'path' | 'leash';
+
 export interface EvolveSettings {
+  /** See `MotionMode`. */
+  motion: MotionMode;
   /** Seconds for the fastest gene to reach a new target. */
   minSeconds: number;
   /** Seconds for the slowest gene. */
@@ -199,6 +215,7 @@ export interface EvolveSettings {
 }
 
 export const DEFAULT_SETTINGS: EvolveSettings = {
+  motion: 'path',
   // Quick enough to SEE on first press: the rule genes (glacial in the layered
   // arrangement) take ~25s to reach a favorite rather than over a minute.
   minSeconds: 3,
@@ -415,6 +432,12 @@ export class Evolver {
   private hopping = false;
   private w = 0;
   private direction = 1;
+  /**
+   * Path mode's current leg: from where the creature WAS when the leg began
+   * (per gene) to the favorite `to`, `u` of the way along. `origin` is the
+   * favorite it just arrived at, when the leg began at one.
+   */
+  private leg: { from: number[][]; to: Attractor; origin: Attractor | null; u: number } | null = null;
   private lastSpread: number[] = [];
   /** Measured motion, from the Orchestrator's temperature probe. */
   private temperature = { relative: 1, cold: false, coldFor: 0 };
@@ -638,6 +661,7 @@ export class Evolver {
     this.focus = null;
     this.nextFocus();
     this.newLine(this.ruleSpread());
+    this.leg = null;
     this.running = true;
     return true;
   }
@@ -673,6 +697,98 @@ export class Evolver {
     this.running = false;
   }
 
+  /**
+   * Begin a path-mode leg toward `to`, starting EXACTLY where every gene is
+   * now -- so a new leg, however it begins, never makes anything jump.
+   */
+  private startLeg(to: Attractor, origin: Attractor | null): void {
+    const spread = this.ruleSpread();
+    this.leg = { from: this.genes.map((g) => [...g.x]), to, origin, u: 0 };
+    this.genes.forEach((g, i) => {
+      g.own = null;
+      g.offsetGoal = this.offsetFor(i, spread);
+      g.offset = [...g.offsetGoal];
+    });
+    // For the telemetry log and the panel, which read the line as a pair.
+    this.pair = { a: origin ?? to, b: to };
+    this.hopping = origin !== null && familyOf(origin.project) !== familyOf(to.project);
+    this.direction = 1;
+    this.w = 0;
+  }
+
+  /**
+   * Path mode's frame. Every gene sits ON the drawn path: a straight line from
+   * the leg's start to its favorite, plus a wander bump that is zero at both
+   * ends (so each favorite is reached exactly). On arrival the next leg starts
+   * that same frame, toward the next favorite.
+   */
+  private stepPath(dt: number): Project | null {
+    const s = this.settings;
+    if (this.leg === null) {
+      const first = this.focus ?? this.pick();
+      if (first === null) return null;
+      this.startLeg(first, null);
+    }
+    let leg = this.leg!;
+    const cold = this.temperature.cold;
+
+    // LEARN, as the leash does: blame the favorite being approached for cold,
+    // and remember the favorite last reached or left while clearly warm.
+    if (cold) {
+      this.chill.set(leg.to.key, (this.chill.get(leg.to.key) ?? 0) + dt);
+    } else if (this.temperature.relative > 0.5) {
+      if (leg.u > 0.8) this.warmAnchor = leg.to;
+      else if (leg.u < 0.2 && leg.origin !== null) this.warmAnchor = leg.origin;
+    }
+    if (cold && this.temperature.coldFor > COLD_ABANDON_SECONDS && !this.abandonedThisSpell) {
+      // ABANDON: head, from right here, for where it was last alive.
+      const anchor =
+        this.warmAnchor !== null && this.pool.includes(this.warmAnchor) && this.warmAnchor !== leg.to
+          ? this.warmAnchor
+          : this.otherThan(leg.to);
+      this.focus = anchor;
+      this.startLeg(anchor, null);
+      this.abandonedThisSpell = true;
+      this.turnedThisSpell = true;
+    } else if (cold && this.temperature.coldFor > COLD_TURN_SECONDS && !this.turnedThisSpell) {
+      // TURN BACK toward the favorite this leg came from.
+      if (leg.origin !== null) {
+        this.focus = leg.origin;
+        this.startLeg(leg.origin, null);
+      }
+      this.turnedThisSpell = true;
+    }
+    leg = this.leg!;
+
+    const prev = this.genes.map((g) => [...g.x]);
+    const u = leg.u + ((cold ? COLD_SPEEDUP : 1) * dt) / Math.max(1, s.strideSeconds);
+    if (u >= 1) {
+      // ARRIVED: every gene exactly on the favorite, then straight on.
+      const arrived = leg.to;
+      this.genes.forEach((g, i) => {
+        g.x = geneOf(arrived.project, i);
+        clampGene(i, g.x);
+      });
+      this.nextFocus();
+      this.startLeg(this.focus ?? arrived, arrived);
+      leg = this.leg!;
+      leg.u = Math.min(0.5, u - 1);
+    } else {
+      leg.u = u;
+    }
+    this.w = leg.u;
+
+    const bump = Math.sin(Math.PI * leg.u);
+    this.genes.forEach((g, i) => {
+      const from = leg.from[i]!;
+      const to = geneOf(leg.to.project, i);
+      g.x = from.map((a, k) => a + leg.u * ((to[k] ?? a) - a) + bump * (g.offset[k] ?? 0));
+      clampGene(i, g.x);
+      g.v = g.x.map((x, k) => (dt > 0 ? (x - (prev[i]![k] ?? x)) / dt : 0));
+    });
+    return this.current();
+  }
+
   /** Advance the target point and every spring by `dt` seconds; return the project to show. */
   step(dt: number): Project | null {
     if (!this.running || this.base === null || this.pool.length === 0) return null;
@@ -682,7 +798,8 @@ export class Evolver {
 
     this.focusClock += dt;
     let focusChanged = false;
-    if (this.focusClock >= s.focusSeconds) {
+    // In path mode the next favorite is chosen on ARRIVAL, not on a clock.
+    if (s.motion !== 'path' && this.focusClock >= s.focusSeconds) {
       this.nextFocus();
       focusChanged = true;
     }
@@ -697,6 +814,8 @@ export class Evolver {
         return clamp(next, 0, 1);
       });
     }
+
+    if (s.motion === 'path') return this.stepPath(dt);
 
     // THE TARGET POINT glides at a steady pace along its line. At an end it
     // either turns back (momentum kept, direction flipped) or -- if the focus
