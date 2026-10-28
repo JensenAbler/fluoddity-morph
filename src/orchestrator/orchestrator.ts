@@ -399,6 +399,7 @@ export class Orchestrator implements CommandBus {
 
   /** Measured particle motion ("0 kelvin" detector). Built on first frame. */
   private temperatureProbe: TemperatureProbe | null = null;
+  private seenArrivals = 0;
 
   /**
    * Project state from before a hover-preview began, so a committed load
@@ -922,6 +923,11 @@ export class Orchestrator implements CommandBus {
     }
     if (this.evolver.running && !this.paused) {
       const dt = this.recorder !== null ? 1 / RECORDING_FPS : Math.min(input.dt, 0.1);
+      if (this.temperatureProbe !== null && this.evolver.arrivals !== this.seenArrivals) {
+        // A new favorite: the stillness sensor starts fresh (see `Evolver.arrivals`).
+        this.seenArrivals = this.evolver.arrivals;
+        this.temperatureProbe.freshStart();
+      }
       if (this.temperatureProbe !== null) this.evolver.setTemperature(this.temperatureProbe.value);
       const next = this.evolver.step(dt);
       if (next !== null) this.setProject(next);

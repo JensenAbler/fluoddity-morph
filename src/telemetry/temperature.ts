@@ -55,6 +55,17 @@ export class TemperatureProbe {
     return this.latest;
   }
 
+  /**
+   * Forget the recent peak, as if the run had just begun. Called when the
+   * evolver arrives at a new favorite, so its stillness is judged against its
+   * own motion rather than whatever came before.
+   */
+  freshStart(): void {
+    this.peak = 0;
+    this.coldSince = null;
+    this.latest = { speed: this.latest.speed, relative: 1, cold: false, coldFor: 0 };
+  }
+
   /** Called while the frame's encoder is open: queue the copy if one is due. */
   record(encoder: GPUCommandEncoder, entities: GPUBuffer, nowMs: number): void {
     if (this.failed || this.pending || nowMs - this.lastRecord < INTERVAL_MS) return;

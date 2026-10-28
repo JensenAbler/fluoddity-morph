@@ -131,6 +131,12 @@ const COHORT_MELT_HALF_WIDTH = 0.2;
 const BIG_BREATH_STRETCH = 1.5;
 /** Breathe mode: seconds of stillness on the way up that top a breath out. */
 const BREATH_TOPOUT_COLD_SECONDS = 1;
+/**
+ * Breathe mode: seconds a breath must climb before it may top out. A safety
+ * net: even if the stillness sensor is fooled, a favorite can never burn
+ * through its breaths in an instant.
+ */
+const BREATH_MIN_CLIMB_SECONDS = 4;
 /** Breathe mode: fraction of a breath cohort colour takes to fade out / in. */
 const BREATH_COLOR_FADE = 0.15;
 /**
@@ -628,6 +634,23 @@ export class Evolver {
   private lastSpread: number[] = [];
   /** Measured motion, from the Orchestrator's temperature probe. */
   private temperature = { relative: 1, cold: false, coldFor: 0 };
+  private arrivalCount = 0;
+
+  /**
+   * How many favorites have been arrived at. The orchestrator watches it to
+   * give the stillness sensor a FRESH START at each new favorite, so a calm
+   * one (Indigo Flame Society) is judged on its own motion, not against the
+   * racing of the big breath it just came out of.
+   */
+  get arrivals(): number {
+    return this.arrivalCount;
+  }
+
+  private arrived(): void {
+    this.arrivalCount += 1;
+    // Warm until the sensor's fresh reading arrives.
+    this.temperature = { relative: 1, cold: false, coldFor: 0 };
+  }
   /** Whether this cold spell has already turned the drift around / abandoned the line. */
   private turnedThisSpell = false;
   private abandonedThisSpell = false;
@@ -927,7 +950,12 @@ export class Evolver {
     // the top. An ordinary breath mirrors its phase (the same curve, back down
     // from exactly where it is); a big breath starts its descent -- the path to
     // the next favorite -- from the mutation it reached.
-    if (b.t < 0.5 && this.temperature.cold && this.temperature.coldFor >= BREATH_TOPOUT_COLD_SECONDS) {
+    if (
+      b.t < 0.5 &&
+      b.t * Math.max(5, s.breathSeconds) * (b.big ? BIG_BREATH_STRETCH : 1) >= BREATH_MIN_CLIMB_SECONDS &&
+      this.temperature.cold &&
+      this.temperature.coldFor >= BREATH_TOPOUT_COLD_SECONDS
+    ) {
       if (b.big) {
         b.descentPeak = this.genes[MUTATION_GENE]!.x[0] ?? peak;
         b.t = 0.5;
@@ -980,6 +1008,7 @@ export class Evolver {
           if (i !== MUTATION_GENE) g.x = geneOf(next.project, i);
         });
         this.home = next;
+        this.arrived();
         const d = discreteOf(next.project);
         b.colorIn = d.cohorts !== this.discrete.cohorts || d.colorByCohort !== this.discrete.colorByCohort;
         b.colorInT = 0;
@@ -1096,6 +1125,7 @@ export class Evolver {
     if (u >= 1) {
       // ARRIVED: every gene exactly on the favorite, then straight on.
       const arrived = leg.to;
+      this.arrived();
       this.legacyTwists = false;
       this.hashHold = null;
       this.genes.forEach((g, i) => {

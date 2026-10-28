@@ -600,7 +600,7 @@ test('breathe: mutation breathes 0 -> peak -> 0, re-rolls at zero, hops at the t
 test('breathe: going still on the way up tops the breath out, continuing smoothly downward', () => {
   const ev = new Evolver(seeded(107));
   ev.settings.motion = 'breathe';
-  ev.settings.breathSeconds = 10;
+  ev.settings.breathSeconds = 20;
   ev.settings.breathPeak = 2;
   ev.settings.bigPeak = 6;
   ev.settings.bigEvery = 2;
@@ -616,17 +616,17 @@ test('breathe: going still on the way up tops the breath out, continuing smoothl
     }
     return scales;
   };
-  // Ordinary breath: still from frame 50 (t = 0.25, a quarter of the way).
-  const a = run(60, (f) => f >= 50);
+  // Ordinary breath: still from frame 100 (t = 0.25, 5 s up -- past the minimum climb).
+  const a = run(120, (f) => f >= 100);
   const top = Math.max(...a);
   assert.ok(top < 1.1, `topped out well below the peak of 2: ${top}`);
   for (let i = 1; i < a.length; i++) assert.ok(Math.abs(a[i]! - a[i - 1]!) < 0.05, 'no jump');
-  assert.ok(a[59]! < a[52]!, 'heading back down');
+  assert.ok(a[119]! < a[104]!, 'heading back down');
   // It reaches zero in about the time it took to climb, then the big breath.
-  const b = run(60, () => false);
+  const b = run(160, () => false);
   assert.ok(Math.min(...b) < 0.02, 'back to zero');
   // Big breath: still a third of the way up -- it starts down toward the next favorite.
-  const c = run(500, (f) => f > 60 && f < 100);
+  const c = run(700, (f) => f > 60 && f < 140);
   for (let i = 1; i < c.length; i++) assert.ok(Math.abs(c[i]! - c[i - 1]!) < 0.08, `no jump in the big breath at ${i}`);
   assert.ok(Math.max(...c) < 5, `big breath topped out early: ${Math.max(...c)}`);
   assert.ok(Math.abs(ev.current()!.configs[0]!.rule[0]! - 1) < 1e-9, 'and still arrived at the next favorite');
@@ -671,4 +671,21 @@ test('breathe: cohort colour fades in on its own clock even if the next breath t
     prev = ev.cohortColorMix;
   }
   assert.ok(worst < 0.05, `cohort colour jumped by ${worst}`);
+});
+
+test('breathe: a breath climbs at least a few seconds before it may top out', () => {
+  const ev = new Evolver(seeded(127));
+  ev.settings.motion = 'breathe';
+  ev.settings.breathSeconds = 40;
+  ev.settings.bigEvery = 4;
+  ev.setPool([{ name: 'other', project: project(1), likes: 1 }]);
+  assert.ok(ev.start(project(0)));
+  // Still the whole time: breaths still climb 4 s each, so four take well over 16 s.
+  let frames = 0;
+  while (ev.arrivals === 0 && frames < 4000) {
+    ev.setTemperature({ relative: 0, cold: true, coldFor: 5 });
+    ev.step(0.05);
+    frames++;
+  }
+  assert.ok(frames * 0.05 > 16, `reached the next favorite after only ${frames * 0.05} s`);
 });
