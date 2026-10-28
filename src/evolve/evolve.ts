@@ -166,7 +166,37 @@ export function familyOf(project: Project): string {
   const c = project.configs[0]!;
   const sign = (v: number): string => (v > 0 ? '+' : v < 0 ? '-' : '0');
   const engine = Math.abs(c.axialForce) >= 0.06 ? 'E' : 'e';
-  return `${sign(c.lateralForce)}${sign(c.sensorAngle)}${engine}`;
+  // TWO PHYSICS REGIMES OF THEIR OWN, past the slider ranges: negative drag
+  // (Slower, Buttons, Torpedo) and gain far beyond the slider's 8 (Slower 17,
+  // Dunes 144 -- the dozen saves just over 8 are not a different regime).
+  const regime = `${c.drag < 0 ? 'D' : ''}${c.sensorGain > 12 ? 'G' : ''}`;
+  return `${sign(c.lateralForce)}${sign(c.sensorAngle)}${engine}${regime}`;
+}
+
+/**
+ * Path mode: half the width (as a fraction of the leg's time) of the jump
+ * physics makes between two families. 0.05 = 10% of the leg, 2.5 s at the
+ * default stride: the creature hops over the in-between physics rather than
+ * lingering in it.
+ */
+const HOP_HALF_WIDTH = 0.05;
+
+function hopEase(u: number): number {
+  const t = clamp((u - 0.5 + HOP_HALF_WIDTH) / (2 * HOP_HALF_WIDTH), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * Path mode's clamp: the slider range, WIDENED to take in both ends of the leg,
+ * so a favorite whose physics lies past a slider (Slower's gain of 17) is
+ * reached as it is, not squeezed into range.
+ */
+function clampPath(i: number, x: number[], a: readonly number[], b: readonly number[]): void {
+  GENES[i]!.fields.forEach((spec, k) => {
+    const lo = Math.min(spec.lo, a[k] ?? spec.lo, b[k] ?? spec.lo);
+    const hi = Math.max(spec.hi, a[k] ?? spec.hi, b[k] ?? spec.hi);
+    x[k] = clamp(x[k]!, lo, hi);
+  });
 }
 
 export interface Attractor {
@@ -524,6 +554,16 @@ export class Evolver {
    */
   private legacyTwists = false;
   private hashHold: number[] | null = null;
+  /** 0..1: how much of colour-by-cohort is showing (see `cohortColorMix`). */
+  private cohortColor = 0;
+
+  /**
+   * How much of colour-by-cohort the camera should show, 0..1: the evolver
+   * fades it rather than switching it, so cohort colours never pop.
+   */
+  get cohortColorMix(): number {
+    return this.cohortColor;
+  }
   private lastSpread: number[] = [];
   /** Measured motion, from the Orchestrator's temperature probe. */
   private temperature = { relative: 1, cold: false, coldFor: 0 };
@@ -744,6 +784,7 @@ export class Evolver {
     const origin = from ?? this.pick()!.project;
     this.base = origin;
     this.discrete = discreteOf(origin);
+    this.cohortColor = this.discrete.colorByCohort ? 1 : 0;
     {
       const c = origin.configs[0]!;
       this.legacyTwists = this.settings.motion === 'path' && c.cohorts > 1 && c.mutationScale !== 0 && c.mutationSeed >= 0;
@@ -809,7 +850,8 @@ export class Evolver {
     });
     // For the telemetry log and the panel, which read the line as a pair.
     this.pair = { a: origin ?? to, b: to };
-    this.hopping = origin !== null && familyOf(origin.project) !== familyOf(to.project);
+    const here = origin?.project ?? this.current();
+    this.hopping = here !== null && familyOf(here) !== familyOf(to.project);
     this.direction = 1;
     this.w = 0;
   }
@@ -867,7 +909,6 @@ export class Evolver {
       this.hashHold = null;
       this.genes.forEach((g, i) => {
         g.x = geneOf(arrived.project, i);
-        clampGene(i, g.x);
       });
       this.nextFocus();
       this.startLeg(this.focus ?? arrived, arrived);
@@ -884,8 +925,11 @@ export class Evolver {
     this.genes.forEach((g, i) => {
       const from = leg.from[i]!;
       const to = geneOf(leg.to.project, i);
-      g.x = from.map((a, k) => a + e * ((to[k] ?? a) - a) + bump * (g.offset[k] ?? 0));
-      clampGene(i, g.x);
+      // A HOP BETWEEN PHYSICS FAMILIES: physics jumps across around the middle
+      // of the leg instead of lingering in the in-between physics.
+      const ee = this.hopping && GENES[i]!.family === 'physics' ? hopEase(leg.u) : e;
+      g.x = from.map((a, k) => a + ee * ((to[k] ?? a) - a) + bump * (g.offset[k] ?? 0));
+      clampPath(i, g.x, from, to);
       g.v = g.x.map((x, k) => (dt > 0 ? (x - (prev[i]![k] ?? x)) / dt : 0));
     });
     // MELT, SWAP, SEPARATE. A change of cohort count reassigns almost every
@@ -905,6 +949,20 @@ export class Evolver {
       const k = d * d * (3 - 2 * d);
       const m = this.genes[MUTATION_GENE]!;
       m.x = m.x.map((v) => v * k);
+    }
+    // COLOR BY COHORT FADES rather than switching: it blends between the two
+    // favorites' settings along the leg, and when the cohort count changes --
+    // which re-deals every particle's cohort colour -- it fades out to the
+    // behaviour colours around the midpoint and back, like the twists do.
+    {
+      const toD = discreteOf(leg.to.project);
+      const fromC = leg.fromDiscrete.colorByCohort ? 1 : 0;
+      let cc = fromC + ((toD.colorByCohort ? 1 : 0) - fromC) * e;
+      if (leg.fromDiscrete.cohorts !== toD.cohorts) {
+        const d = clamp(Math.abs(leg.u - 0.5) / COHORT_MELT_HALF_WIDTH, 0, 1);
+        cc *= d * d * (3 - 2 * d);
+      }
+      this.cohortColor = cc;
     }
     // Past the first melt's midpoint: every cohort is (all but) on the same
     // rule, so steady twists can take over unseen.
@@ -986,6 +1044,7 @@ export class Evolver {
     }
 
     if (this.pair !== null) this.discrete = discreteOf((this.w < 0.5 ? this.pair.a : this.pair.b).project);
+    this.cohortColor = this.discrete.colorByCohort ? 1 : 0;
 
     // EVERY GENE IS A SPRING chasing the point. Critically damped, so a still
     // target is reached without overshoot; velocity carries through every move
@@ -1052,7 +1111,7 @@ export class Evolver {
     config['cohorts'] = this.discrete.cohorts;
     config['initialConditions'] = this.discrete.initialConditions;
     config['cohortFences'] = this.discrete.cohortFences;
-    config['colorByCohort'] = this.discrete.colorByCohort;
+    config['colorByCohort'] = this.cohortColor > 0;
     config['mutationSeed'] = this.legacyTwists
       ? baseConfig.mutationSeed
       : -Math.max(1e-6, Math.abs(baseConfig.mutationSeed));

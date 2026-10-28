@@ -102,6 +102,9 @@ fn hue_coefficients(index: i32) -> vec2f {
 // non-negative ramp), so "no highlight" has a spare value of its own and a
 // second lane could only ever disagree with this one.
 fn highlighted_cohort() -> f32 { return u.flags.y; }
+// Cohort mode only: 0 = pure cohort colours, 1 = pure behaviour colours.
+// The evolver fades through it so colour-by-cohort never pops.
+fn cohort_color_fade() -> f32 { return u.flags.z; }
 
 // How far apart consecutive cohorts land on the hue wheel. Three quarters of a
 // turn separates neighbours without the arbitrary jumble a hash gives, and hue
@@ -292,6 +295,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     // only mode that carries its own saturation, which is the whole reason it
     // exists -- the other two pin it at 0.8.
     var hue : f32;
+    var behavior_hue = 0.0;
     var saturation = 0.8;
     let mode = color_mode();
     if (mode == MODE_SWATCH) {
@@ -306,6 +310,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
                             in.col_params.y * COHORT_COLOR_CONSTANT,
                             mode == MODE_COHORT);
         hue = ab.x * signal + ab.y;
+        behavior_hue = ab.x * in.col_params.x + ab.y;
     }
 
     // THE COHORT HIGHLIGHT. `col_params.y` is floor(cohort)
@@ -339,5 +344,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     // carries the saturation its author picked. The wash still multiplies it,
     // so a desaturated swatch washes further toward grey when it is outside the
     // highlighted cohort -- which is the highlight doing its job in every mode.
-    return vec4f(hsv2rgb(vec3f(hue, saturation * wash, 1.0)) * kernel * u.sprite.y * dim, 1.0);
+    var rgb = hsv2rgb(vec3f(hue, saturation * wash, 1.0));
+    if (mode == MODE_COHORT) {
+        rgb = mix(rgb, hsv2rgb(vec3f(behavior_hue, saturation * wash, 1.0)),
+                  clamp(cohort_color_fade(), 0.0, 1.0));
+    }
+    return vec4f(rgb * kernel * u.sprite.y * dim, 1.0);
 }

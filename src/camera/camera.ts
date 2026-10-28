@@ -121,6 +121,13 @@ export interface CameraFrame {
    * thread it through.
    */
   readonly highlightedCohort?: number;
+  /**
+   * Cohort mode only: how far the cohort colours are faded toward the
+   * behaviour colours, 0 (pure cohort colours) .. 1 (pure behaviour). The
+   * evolver uses it so colour-by-cohort fades instead of popping. Optional,
+   * defaulting to 0, so every other caller is unchanged.
+   */
+  readonly cohortColorFade?: number;
 }
 
 export class Camera {
@@ -488,6 +495,7 @@ export class Camera {
         frame.colorMode,
         frame.highlightedCohort ?? -1,
         frame.swatchColors ?? [],
+        frame.cohortColorFade ?? 0,
       ),
     );
     queue.writeBuffer(this.accumUniforms, 0, packAccumulateUniforms(samples));

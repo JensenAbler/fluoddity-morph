@@ -983,6 +983,8 @@ export class Orchestrator implements CommandBus {
       // diffs, and widening it to a three-valued mode would change the config
       // format for a value the third state cannot apply to.
       colorMode: config.colorByCohort ? 1 : 0,
+      // While evolving, colour-by-cohort FADES (see `Evolver.cohortColorMix`).
+      cohortColorFade: this.evolver.running ? 1 - this.evolver.cohortColorMix : 0,
       // PARTICLES mode only -- TRAIL renders the canvas texture, which holds
       // velocity rather than cohort and cannot express a per-cohort dim at all.
       // See `CameraFrame.highlightedCohort`.

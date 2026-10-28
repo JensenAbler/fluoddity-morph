@@ -502,3 +502,26 @@ test('starting from a multi-cohort state keeps its own twists, then melts into s
   for (let f = 0; f < 100; f++) c = ev.step(0.05)!.configs[0]!; // arrived at b
   for (const i of hashed) assert.ok(Math.abs(c.rule[i]! - 1) < 0.05, `released to b: ${c.rule[i]}`);
 });
+
+test('path mode hops between physics regimes and reaches out-of-range physics as it is', () => {
+  const ev = new Evolver(seeded(97));
+  ev.settings.motion = 'path';
+  ev.settings.ruleWander = 0;
+  ev.settings.settingWander = 0;
+  ev.settings.linger = 0;
+  ev.settings.strideSeconds = 10;
+  const odd = makeProject({
+    configs: [{ ...project(1).configs[0]!, sensorGain: 17, drag: -0.6 }],
+    world: makeWorldSettings(),
+  });
+  assert.notEqual(familyOf(odd), familyOf(project(0)), 'negative drag and huge gain are their own regime');
+  ev.setPool([{ name: 'odd', project: odd, likes: 1 }]);
+  assert.ok(ev.start(project(0, 4)));
+  let c = ev.step(0.05)!.configs[0]!;
+  for (let f = 0; f < 80; f++) c = ev.step(0.05)!.configs[0]!; // 4 s: before the hop
+  assert.ok(Math.abs(c.sensorGain - 4) < 0.01, `physics waits: ${c.sensorGain}`);
+  assert.ok(c.rule[0]! > 0.3, 'while the rule is well on its way');
+  for (let f = 0; f < 40; f++) c = ev.step(0.05)!.configs[0]!; // 6 s: after it
+  assert.ok(Math.abs(c.sensorGain - 17) < 0.01, `hopped over: ${c.sensorGain}`);
+  assert.ok(Math.abs(c.drag + 0.6) < 0.01, `negative drag kept: ${c.drag}`);
+});

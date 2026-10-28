@@ -206,6 +206,7 @@ export function packCamBrushUniforms(
   colorMode: number,
   highlightedCohort = -1,
   swatches: readonly SwatchAppearance[] = [],
+  cohortColorFade = 0,
 ): ArrayBuffer {
   const buffer = new ArrayBuffer(CAM_BRUSH_UNIFORM_SIZE);
   const f32 = new Float32Array(buffer);
@@ -230,6 +231,9 @@ export function packCamBrushUniforms(
   // in Behavior regardless of the dropdown.
   i32[12] = colorMode;
   f32[13] = highlightedCohort;
+  // z: cohort colour FADE, 0 = pure cohort colours. Stored as a fade rather
+  // than a mix so the zero a reserved lane already holds means "unchanged".
+  f32[14] = cohortColorFade;
 
   // The appearance table. A caller with fewer entries than slots leaves the
   // rest at zero -- black with no signal response, which is what an unpainted
