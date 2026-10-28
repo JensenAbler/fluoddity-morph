@@ -128,6 +128,8 @@ const MUTATION_GENE = GENES.findIndex((g) => g.label === 'mutation');
 const COHORT_MELT_HALF_WIDTH = 0.2;
 /** Breathe mode: a big breath lasts this many ordinary breaths. */
 const BIG_BREATH_STRETCH = 1.5;
+/** Breathe mode: seconds of stillness on the way up that top a breath out. */
+const BREATH_TOPOUT_COLD_SECONDS = 1;
 /** Breathe mode: fraction of a breath cohort colour takes to fade out / in. */
 const BREATH_COLOR_FADE = 0.15;
 /**
@@ -602,6 +604,8 @@ export class Evolver {
     from: null as number[][] | null,
     pending: null as Discrete | null,
     colorIn: false,
+    /** A big breath that topped out early descends from here, not the peak. */
+    descentPeak: null as number | null,
   };
 
   /**
@@ -847,6 +851,7 @@ export class Evolver {
         from: null,
         pending: null,
         colorIn: false,
+        descentPeak: null,
       };
     }
     {
@@ -905,6 +910,20 @@ export class Evolver {
     const peak = b.big ? s.bigPeak : s.breathPeak;
     b.t += dt / (Math.max(5, s.breathSeconds) * (b.big ? BIG_BREATH_STRETCH : 1));
 
+    // TOP OUT EARLY. If the particles go still on the way up, this breath has
+    // gone as far as it should: turn around now and breathe down as if from
+    // the top. An ordinary breath mirrors its phase (the same curve, back down
+    // from exactly where it is); a big breath starts its descent -- the path to
+    // the next favorite -- from the mutation it reached.
+    if (b.t < 0.5 && this.temperature.cold && this.temperature.coldFor >= BREATH_TOPOUT_COLD_SECONDS) {
+      if (b.big) {
+        b.descentPeak = this.genes[MUTATION_GENE]!.x[0] ?? peak;
+        b.t = 0.5;
+      } else {
+        b.t = 1 - b.t;
+      }
+    }
+
     // THE TOP OF A BIG BREATH: choose the next favorite. The way up stays on
     // this one; THE WAY DOWN IS A PATH -- every gene slides from where it is to
     // the next favorite along the same S-curve as a path leg, while the
@@ -942,6 +961,7 @@ export class Evolver {
       b.big = s.bigEvery > 0 && (b.count + 1) % Math.round(s.bigEvery) === 0;
       b.seed = 1e-3 + this.rng() * 0.998;
       b.legacy = false;
+      b.descentPeak = null;
       if (b.next !== null) {
         const next = b.next;
         this.genes.forEach((g, i) => {
@@ -958,7 +978,7 @@ export class Evolver {
     }
 
     const m = this.genes[MUTATION_GENE]!;
-    m.x = [Math.max(0, peak) * (descent !== null ? 1 - descent : Math.sin(Math.PI * b.t) ** 2)];
+    m.x = [Math.max(0, descent !== null ? (b.descentPeak ?? peak) * (1 - descent) : peak * Math.sin(Math.PI * b.t) ** 2)];
 
     // Cohort colour fades out before a change of count or colour mode lands
     // at the zero, and back in after it.

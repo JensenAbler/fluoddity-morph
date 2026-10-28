@@ -596,3 +596,38 @@ test('breathe: mutation breathes 0 -> peak -> 0, re-rolls at zero, hops at the t
   assert.ok(c.mutationScale < 0.05, `at the zero: ${c.mutationScale}`);
   assert.ok(Math.abs(c.rule[0]! - 1) < 1e-9, 'arrived at the other favorite');
 });
+
+test('breathe: going still on the way up tops the breath out, continuing smoothly downward', () => {
+  const ev = new Evolver(seeded(107));
+  ev.settings.motion = 'breathe';
+  ev.settings.breathSeconds = 10;
+  ev.settings.breathPeak = 2;
+  ev.settings.bigPeak = 6;
+  ev.settings.bigEvery = 2;
+  ev.setPool([{ name: 'other', project: project(1), likes: 1 }]);
+  assert.ok(ev.start(project(0)));
+  const dt = 0.05;
+  const run = (frames: number, cold: (f: number) => boolean) => {
+    const scales: number[] = [];
+    for (let f = 0; f < frames; f++) {
+      const c = cold(f);
+      ev.setTemperature({ relative: c ? 0 : 1, cold: c, coldFor: c ? 2 : 0 });
+      scales.push(ev.step(dt)!.configs[0]!.mutationScale);
+    }
+    return scales;
+  };
+  // Ordinary breath: still from frame 50 (t = 0.25, a quarter of the way).
+  const a = run(60, (f) => f >= 50);
+  const top = Math.max(...a);
+  assert.ok(top < 1.1, `topped out well below the peak of 2: ${top}`);
+  for (let i = 1; i < a.length; i++) assert.ok(Math.abs(a[i]! - a[i - 1]!) < 0.05, 'no jump');
+  assert.ok(a[59]! < a[52]!, 'heading back down');
+  // It reaches zero in about the time it took to climb, then the big breath.
+  const b = run(60, () => false);
+  assert.ok(Math.min(...b) < 0.02, 'back to zero');
+  // Big breath: still a third of the way up -- it starts down toward the next favorite.
+  const c = run(500, (f) => f > 60 && f < 100);
+  for (let i = 1; i < c.length; i++) assert.ok(Math.abs(c[i]! - c[i - 1]!) < 0.08, `no jump in the big breath at ${i}`);
+  assert.ok(Math.max(...c) < 5, `big breath topped out early: ${Math.max(...c)}`);
+  assert.ok(Math.abs(ev.current()!.configs[0]!.rule[0]! - 1) < 1e-9, 'and still arrived at the next favorite');
+});
