@@ -472,3 +472,33 @@ test('cohorts are carried: count switches mid-leg, mutation blends, seed asks fo
   for (let f = 0; f < 60; f++) c = ev.step(0.05)!.configs[0]!; // 9 s: melt over
   assert.ok(Math.abs(c.mutationScale - 0.18) < 0.01, `mutation blends: ${c.mutationScale}`);
 });
+
+test('starting from a multi-cohort state keeps its own twists, then melts into steady ones', () => {
+  const ev = new Evolver(seeded(93));
+  ev.settings.motion = 'path';
+  ev.settings.ruleWander = 0;
+  ev.settings.settingWander = 0;
+  ev.settings.linger = 0;
+  ev.settings.strideSeconds = 10;
+  const startRule = Array.from({ length: 80 }, (_, i) => Math.sin(i * 1.7) * 0.8);
+  const start = makeProject({
+    configs: [{ ...project(0).configs[0]!, rule: startRule, cohorts: 8, mutationScale: 0.3, mutationSeed: 0.42 }],
+    world: makeWorldSettings(),
+  });
+  ev.setPool([{ name: 'b', project: project(1), likes: 1 }]);
+  assert.ok(ev.start(start));
+  const hashed = [32, 33, 61, 60, 10, 11];
+  let c = ev.step(0.05)!.configs[0]!;
+  assert.equal(c.mutationSeed, 0.42, 'the save\'s own seed, so its own twists');
+  assert.equal(c.cohorts, 8);
+  for (const i of hashed) assert.equal(c.rule[i], startRule[i], `hash float ${i} held`);
+  assert.notEqual(c.rule[0], startRule[0], 'the rest of the rule moves');
+  for (let f = 0; f < 98; f++) c = ev.step(0.05)!.configs[0]!; // just before the midpoint
+  assert.equal(c.mutationSeed, 0.42);
+  for (const i of hashed) assert.equal(c.rule[i], startRule[i]);
+  assert.ok(c.mutationScale < 0.01, `melted: ${c.mutationScale}`);
+  for (let f = 0; f < 3; f++) c = ev.step(0.05)!.configs[0]!; // just past it
+  assert.ok(c.mutationSeed < 0, 'steady twists from here');
+  for (let f = 0; f < 100; f++) c = ev.step(0.05)!.configs[0]!; // arrived at b
+  for (const i of hashed) assert.ok(Math.abs(c.rule[i]! - 1) < 0.05, `released to b: ${c.rule[i]}`);
+});

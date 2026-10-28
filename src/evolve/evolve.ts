@@ -126,6 +126,14 @@ const MUTATION_GENE = GENES.findIndex((g) => g.label === 'mutation');
  * cohort count changes. 0.2 = 40% of the leg, 10 s at the default stride.
  */
 const COHORT_MELT_HALF_WIDTH = 0.2;
+/**
+ * [rule gene, float within it] of the six rule floats `mutate_rule` hashes a
+ * save's twist seed from: centers[4].frequency.xy, centers[7].amplitude.yx,
+ * centers[1].frequency.zw (each center is frequency(4) then amplitude(4)).
+ */
+const HASH_LANES: readonly (readonly [number, number])[] = [
+  [4, 0], [4, 1], [7, 5], [7, 4], [1, 2], [1, 3],
+];
 
 export function geneFamily(i: number): GeneFamily {
   return GENES[i]!.family;
@@ -502,6 +510,20 @@ export class Evolver {
   } | null = null;
   /** The cohort count, layout and cohort switches in force right now. */
   private discrete: Discrete = { cohorts: 1, initialConditions: 2, cohortFences: false, colorByCohort: false };
+  /**
+   * KEEP THE COHORTS YOU STARTED WITH. Steady twists (a negative seed) are
+   * drawn differently from a save's own, so switching to them on the first
+   * frame changed every cohort the moment Evolve began. Instead, while
+   * `legacyTwists` is set the save's own seed stays in force, and the six rule
+   * floats its twist seed is hashed from (`HASH_LANES`) are HELD at their
+   * starting values (`hashHold`), so that seed -- and every cohort's twist --
+   * holds steady while the rest of the rule moves. The first leg melts the
+   * twists (as a cohort-count change does); at its midpoint, with every cohort
+   * on the same rule, the switch to steady twists is invisible, and the held
+   * floats are released over the leg's second half.
+   */
+  private legacyTwists = false;
+  private hashHold: number[] | null = null;
   private lastSpread: number[] = [];
   /** Measured motion, from the Orchestrator's temperature probe. */
   private temperature = { relative: 1, cold: false, coldFor: 0 };
@@ -722,6 +744,11 @@ export class Evolver {
     const origin = from ?? this.pick()!.project;
     this.base = origin;
     this.discrete = discreteOf(origin);
+    {
+      const c = origin.configs[0]!;
+      this.legacyTwists = this.settings.motion === 'path' && c.cohorts > 1 && c.mutationScale !== 0 && c.mutationSeed >= 0;
+      this.hashHold = this.legacyTwists ? HASH_LANES.map(([gi, k]) => geneOf(origin, gi)[k]!) : null;
+    }
     this.genes = Array.from({ length: GENE_COUNT }, (_, i) => {
       const x = geneOf(origin, i);
       return { x, v: x.map(() => 0), offset: x.map(() => 0), offsetGoal: x.map(() => 0), own: null };
@@ -771,6 +798,9 @@ export class Evolver {
    */
   private startLeg(to: Attractor, origin: Attractor | null): void {
     const spread = this.ruleSpread();
+    // Once steady twists are in force, held hash floats are just where they
+    // are; a new leg starts from there like everything else.
+    if (!this.legacyTwists) this.hashHold = null;
     this.leg = { from: this.genes.map((g) => [...g.x]), fromDiscrete: this.discrete, to, origin, u: 0 };
     this.genes.forEach((g, i) => {
       g.own = null;
@@ -833,6 +863,8 @@ export class Evolver {
     if (u >= 1) {
       // ARRIVED: every gene exactly on the favorite, then straight on.
       const arrived = leg.to;
+      this.legacyTwists = false;
+      this.hashHold = null;
       this.genes.forEach((g, i) => {
         g.x = geneOf(arrived.project, i);
         clampGene(i, g.x);
@@ -861,12 +893,22 @@ export class Evolver {
     // this leg changes the count, the cohorts' twists fade to nothing around
     // the midpoint -- every cohort briefly obeys the same rule -- the count
     // switches there, invisibly, and the twists fade back in.
-    if (leg.fromDiscrete.cohorts !== discreteOf(leg.to.project).cohorts) {
+    if (this.hashHold !== null) {
+      const r = this.legacyTwists ? 0 : clamp((e - 0.5) * 2, 0, 1);
+      HASH_LANES.forEach(([gi, k], j) => {
+        const g = this.genes[gi]!;
+        g.x[k] = this.hashHold![j]! * (1 - r) + g.x[k]! * r;
+      });
+    }
+    if (this.legacyTwists || leg.fromDiscrete.cohorts !== discreteOf(leg.to.project).cohorts) {
       const d = clamp(Math.abs(leg.u - 0.5) / COHORT_MELT_HALF_WIDTH, 0, 1);
       const k = d * d * (3 - 2 * d);
       const m = this.genes[MUTATION_GENE]!;
       m.x = m.x.map((v) => v * k);
     }
+    // Past the first melt's midpoint: every cohort is (all but) on the same
+    // rule, so steady twists can take over unseen.
+    if (this.legacyTwists && leg.u >= 0.5) this.legacyTwists = false;
     return this.current();
   }
 
@@ -997,6 +1039,11 @@ export class Evolver {
       }
     });
     config['rule'] = rule;
+    if (this.legacyTwists && this.hashHold !== null) {
+      HASH_LANES.forEach(([gi, k], j) => {
+        rule[GENES[gi]!.ruleStart! + k] = this.hashHold![j]!;
+      });
+    }
     // COHORTS ARE CARRIED: the count, layout and cohort switches of the
     // favorite in force, and mutation scale as a gene (above). The seed is
     // written NEGATIVE, which tells the shader to use steady per-cohort twists
@@ -1006,7 +1053,9 @@ export class Evolver {
     config['initialConditions'] = this.discrete.initialConditions;
     config['cohortFences'] = this.discrete.cohortFences;
     config['colorByCohort'] = this.discrete.colorByCohort;
-    config['mutationSeed'] = -Math.max(1e-6, Math.abs(baseConfig.mutationSeed));
+    config['mutationSeed'] = this.legacyTwists
+      ? baseConfig.mutationSeed
+      : -Math.max(1e-6, Math.abs(baseConfig.mutationSeed));
     return makeProject({
       configs: [config as unknown as SimulationConfig],
       world: world as unknown as WorldSettings,
