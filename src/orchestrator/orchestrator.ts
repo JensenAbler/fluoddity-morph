@@ -2263,7 +2263,7 @@ export class Orchestrator implements CommandBus {
       temp:
         temp === undefined
           ? undefined
-          : { speed: Number(temp.speed.toPrecision(4)), rel: r4(temp.relative), stuck: r4(temp.stuck), cold: temp.cold },
+          : { speed: Number(temp.speed.toPrecision(4)), rel: r4(temp.relative), cold: temp.cold },
       evolving: this.evolver.running,
       morphing: this.morph.playing,
       evolve: this.evolver.running
