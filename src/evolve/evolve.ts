@@ -128,9 +128,6 @@ const MUTATION_GENE = GENES.findIndex((g) => g.label === 'mutation');
 const COHORT_MELT_HALF_WIDTH = 0.2;
 /** Breathe mode: a big breath lasts this many ordinary breaths. */
 const BIG_BREATH_STRETCH = 1.5;
-/** Breathe mode: the stretch of a big breath (0..1) over which the hop glides. */
-const BREATH_HOP_START = 0.4;
-const BREATH_HOP_END = 0.6;
 /** Breathe mode: fraction of a breath cohort colour takes to fade out / in. */
 const BREATH_COLOR_FADE = 0.15;
 /**
@@ -293,7 +290,7 @@ export interface EvolveSettings {
 }
 
 export const DEFAULT_SETTINGS: EvolveSettings = {
-  motion: 'path',
+  motion: 'breathe',
   // Quick enough to SEE on first press: the rule genes (glacial in the layered
   // arrangement) take ~25s to reach a favorite rather than over a minute.
   minSeconds: 3,
@@ -313,8 +310,8 @@ export const DEFAULT_SETTINGS: EvolveSettings = {
   familyHop: 0.15,
   linger: 0.4,
   breathSeconds: 40,
-  breathPeak: 3.5,
-  bigPeak: 10,
+  breathPeak: 0.5,
+  bigPeak: 4,
   bigEvery: 4,
 };
 
@@ -908,36 +905,36 @@ export class Evolver {
     const peak = b.big ? s.bigPeak : s.breathPeak;
     b.t += dt / (Math.max(5, s.breathSeconds) * (b.big ? BIG_BREATH_STRETCH : 1));
 
-    // THE HOP, at the top of a big breath: every gene glides to the next
-    // favorite while the mutation is at its loudest and hides the change.
-    if (b.big && b.next === null && b.from === null && b.t >= BREATH_HOP_START) {
+    // THE TOP OF A BIG BREATH: choose the next favorite. The way up stays on
+    // this one; THE WAY DOWN IS A PATH -- every gene slides from where it is to
+    // the next favorite along the same S-curve as a path leg, while the
+    // mutation comes down along it from the peak to 0, so the new favorite
+    // arrives as the noise clears instead of emerging from under it.
+    if (b.big && b.next === null && b.from === null && b.t >= 0.5) {
       this.nextFocus();
       const next = this.focus !== null && this.focus !== this.home ? this.focus : this.otherThan(this.home);
       b.next = next;
       b.from = this.genes.map((g) => [...g.x]);
       this.hopping = familyOf(this.home.project) !== familyOf(next.project);
     }
-    if (b.next !== null && b.from !== null) {
-      const k0 = clamp((b.t - BREATH_HOP_START) / (BREATH_HOP_END - BREATH_HOP_START), 0, 1);
-      const k = k0 * k0 * (3 - 2 * k0);
+    let descent: number | null = null;
+    if (b.next !== null && b.from !== null && b.t < 1) {
+      const u = clamp((b.t - 0.5) / 0.5, 0, 1);
+      const e = lingerEase(u, s.linger);
+      descent = e;
       const from = b.from;
       const next = b.next;
       this.genes.forEach((g, i) => {
         if (i === MUTATION_GENE) return;
         const to = geneOf(next.project, i);
-        g.x = from[i]!.map((a, j) => a + k * ((to[j] ?? a) - a));
+        const ee = this.hopping && GENES[i]!.family === 'physics' ? hopEase(u) : e;
+        g.x = from[i]!.map((a, j) => a + ee * ((to[j] ?? a) - a));
+        clampPath(i, g.x, from[i]!, to);
       });
-      if (k0 >= 1) {
-        this.home = next;
-        b.pending = discreteOf(next.project);
-        b.next = null;
-        b.from = null;
-        this.hopping = false;
-      }
     }
 
-    // ZERO: every cohort is identical, so re-roll and apply any waiting cohort
-    // count or layout -- both unseen.
+    // ZERO: every cohort is identical, so re-roll and land any new favorite's
+    // cohort count and layout -- both unseen.
     if (b.t >= 1) {
       b.t = Math.min(0.5, b.t - 1);
       b.count += 1;
@@ -945,22 +942,29 @@ export class Evolver {
       b.big = s.bigEvery > 0 && (b.count + 1) % Math.round(s.bigEvery) === 0;
       b.seed = 1e-3 + this.rng() * 0.998;
       b.legacy = false;
-      if (b.pending !== null) {
-        const d = this.discrete;
-        b.colorIn = b.pending.cohorts !== d.cohorts || b.pending.colorByCohort !== d.colorByCohort;
-        this.discrete = b.pending;
-        b.pending = null;
+      if (b.next !== null) {
+        const next = b.next;
+        this.genes.forEach((g, i) => {
+          if (i !== MUTATION_GENE) g.x = geneOf(next.project, i);
+        });
+        this.home = next;
+        const d = discreteOf(next.project);
+        b.colorIn = d.cohorts !== this.discrete.cohorts || d.colorByCohort !== this.discrete.colorByCohort;
+        this.discrete = d;
+        b.next = null;
+        b.from = null;
+        this.hopping = false;
       }
     }
 
     const m = this.genes[MUTATION_GENE]!;
-    m.x = [Math.max(0, peak) * Math.sin(Math.PI * b.t) ** 2];
+    m.x = [Math.max(0, peak) * (descent !== null ? 1 - descent : Math.sin(Math.PI * b.t) ** 2)];
 
     // Cohort colour fades out before a change of count or colour mode lands
     // at the zero, and back in after it.
     const target = this.discrete.colorByCohort ? 1 : 0;
     let cc = target;
-    const p = b.pending;
+    const p = b.next !== null ? discreteOf(b.next.project) : null;
     if (p !== null && (p.cohorts !== this.discrete.cohorts || p.colorByCohort !== this.discrete.colorByCohort)) {
       cc *= clamp((1 - b.t) / BREATH_COLOR_FADE, 0, 1);
     }

@@ -590,9 +590,9 @@ test('breathe: mutation breathes 0 -> peak -> 0, re-rolls at zero, hops at the t
     if (c.mutationScale > 1) cohortsWhileTwisted.add(c.cohorts);
   }
   assert.ok(Math.abs(bigMax - 10) < 0.1, `big breath peaks near 10: ${bigMax}`);
-  assert.ok(Math.abs(c.rule[0]! - 1) < 1e-9, 'hopped to the other favorite');
   assert.deepEqual([...cohortsWhileTwisted], [1], 'the cohort count never changes while twists are showing');
   for (let i = 0; i < 20 && c.cohorts !== 8; i++) c = ev.step(dt)!.configs[0]!;
   assert.equal(c.cohorts, 8, 'it lands at the zero');
   assert.ok(c.mutationScale < 0.05, `at the zero: ${c.mutationScale}`);
+  assert.ok(Math.abs(c.rule[0]! - 1) < 1e-9, 'arrived at the other favorite');
 });
