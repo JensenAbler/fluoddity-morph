@@ -540,6 +540,18 @@
       "name": "Jensen",
       "entries": [
         {
+          "name": "Arc_Child",
+          "path": "Jensen/Arc_Child.json"
+        },
+        {
+          "name": "Arcs",
+          "path": "Jensen/Arcs.json"
+        },
+        {
+          "name": "Billows",
+          "path": "Jensen/Billows.json"
+        },
+        {
           "name": "Blue-flame-cores",
           "path": "Jensen/Blue-flame-cores.json"
         },
@@ -548,8 +560,44 @@
           "path": "Jensen/Cavitation.json"
         },
         {
+          "name": "Cooperation 2",
+          "path": "Jensen/Cooperation 2.json"
+        },
+        {
+          "name": "Cooperation",
+          "path": "Jensen/Cooperation.json"
+        },
+        {
+          "name": "Dark Mark",
+          "path": "Jensen/Dark Mark.json"
+        },
+        {
+          "name": "Ectoplasm",
+          "path": "Jensen/Ectoplasm.json"
+        },
+        {
+          "name": "Ectoplasm_Parent",
+          "path": "Jensen/Ectoplasm_Parent.json"
+        },
+        {
+          "name": "Etheric",
+          "path": "Jensen/Etheric.json"
+        },
+        {
+          "name": "Fiend Fyre",
+          "path": "Jensen/Fiend Fyre.json"
+        },
+        {
+          "name": "Fractal-flames",
+          "path": "Jensen/Fractal-flames.json"
+        },
+        {
           "name": "Gas-blue-flame",
           "path": "Jensen/Gas-blue-flame.json"
+        },
+        {
+          "name": "Gloop",
+          "path": "Jensen/Gloop.json"
         },
         {
           "name": "Indigo-flame-society",
@@ -560,8 +608,24 @@
           "path": "Jensen/Introspection.json"
         },
         {
+          "name": "Liquid Crystals",
+          "path": "Jensen/Liquid Crystals.json"
+        },
+        {
+          "name": "Mega",
+          "path": "Jensen/Mega.json"
+        },
+        {
           "name": "Mossy-Flames",
           "path": "Jensen/Mossy-Flames.json"
+        },
+        {
+          "name": "Octopus fyre",
+          "path": "Jensen/Octopus fyre.json"
+        },
+        {
+          "name": "Piss",
+          "path": "Jensen/Piss.json"
         },
         {
           "name": "Rainbow-glider-vortex",
@@ -574,6 +638,10 @@
         {
           "name": "Spiral-varieties",
           "path": "Jensen/Spiral-varieties.json"
+        },
+        {
+          "name": "Tendrilplasm",
+          "path": "Jensen/Tendrilplasm.json"
         },
         {
           "name": "Velvet-Flames",
