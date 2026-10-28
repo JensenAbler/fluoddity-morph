@@ -612,6 +612,8 @@ export class Evolver {
     from: null as number[][] | null,
     pending: null as Discrete | null,
     colorIn: false,
+    /** 0..1 through that fade-in, on its own clock (a breath's phase can jump). */
+    colorInT: 0,
     /** A big breath that topped out early descends from here, not the peak. */
     descentPeak: null as number | null,
   };
@@ -860,6 +862,7 @@ export class Evolver {
         from: null,
         pending: null,
         colorIn: false,
+        colorInT: 0,
         descentPeak: null,
       };
     }
@@ -979,6 +982,7 @@ export class Evolver {
         this.home = next;
         const d = discreteOf(next.project);
         b.colorIn = d.cohorts !== this.discrete.cohorts || d.colorByCohort !== this.discrete.colorByCohort;
+        b.colorInT = 0;
         this.discrete = d;
         b.next = null;
         b.from = null;
@@ -998,8 +1002,11 @@ export class Evolver {
       cc *= clamp((1 - b.t) / BREATH_COLOR_FADE, 0, 1);
     }
     if (b.colorIn) {
-      cc = target * clamp(b.t / BREATH_COLOR_FADE, 0, 1);
-      if (b.t >= BREATH_COLOR_FADE) b.colorIn = false;
+      // ITS OWN CLOCK, not the breath's phase: a breath that tops out early
+      // jumps its phase to the top, which snapped the colours in at once.
+      b.colorInT += dt / Math.max(0.5, BREATH_COLOR_FADE * Math.max(5, s.breathSeconds));
+      cc = Math.min(cc, target * clamp(b.colorInT, 0, 1));
+      if (b.colorInT >= 1) b.colorIn = false;
     }
     this.cohortColor = cc;
 

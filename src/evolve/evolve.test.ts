@@ -648,3 +648,27 @@ test('breathe: edges reset all the way down to a new favorite, and are its own a
   assert.equal(seen[420], 2, 'reset on the way down');
   assert.equal(seen[515], 0, 'the new favorite\'s own edges once arrived');
 });
+
+test('breathe: cohort colour fades in on its own clock even if the next breath tops out at once', () => {
+  const ev = new Evolver(seeded(113));
+  ev.settings.motion = 'breathe';
+  ev.settings.breathSeconds = 10;
+  ev.settings.bigEvery = 1;
+  const many = makeProject({
+    configs: [{ ...project(1).configs[0]!, cohorts: 16, colorByCohort: true }],
+    world: makeWorldSettings(),
+  });
+  ev.setPool([{ name: 'many', project: many, likes: 1 }]);
+  assert.ok(ev.start(project(0)));
+  let prev = ev.cohortColorMix;
+  let worst = 0;
+  for (let f = 0; f < 1200; f++) {
+    // Still near every zero, so breaths top out the moment they begin.
+    const cold = f > 480;
+    ev.setTemperature({ relative: cold ? 0 : 1, cold, coldFor: cold ? 2 : 0 });
+    ev.step(0.05);
+    worst = Math.max(worst, Math.abs(ev.cohortColorMix - prev));
+    prev = ev.cohortColorMix;
+  }
+  assert.ok(worst < 0.05, `cohort colour jumped by ${worst}`);
+});
