@@ -227,12 +227,49 @@ async function start(): Promise<void> {
     // drives the page by URL, so this is how an automated check reaches a
     // preset without synthesizing a click on a panel button.
     ...(params.has('preset') ? { presetName: params.get('preset') ?? undefined } : {}),
+    // Evolving from the moment the page opens; `?noevolve` for a still start.
+    autoEvolve: !params.has('noevolve'),
     ...(openWith !== undefined ? { openWith } : {}),
     // `?name=`. Display only, and applies on every path -- see the option.
     ...(urlOptions.name !== null ? { projectName: urlOptions.name } : {}),
     // Governs ONE rule in there: whether a pick commits or only re-aims.
     mobile,
   });
+
+  // --- `?uploadsaves`: send this browser's saves to the server ---------------
+  // ONE-OFF AND OPT-IN. Jensen's saves live in his browser; to ship them to
+  // every visitor they have to reach the server first. Opening the page with
+  // `?uploadsaves` posts each save, one per request (the log endpoint takes at
+  // most 256 KB and two requests a second), to the telemetry receiver, where
+  // they are turned into shipped presets by hand. Never runs without the flag,
+  // so no visitor's saves are ever sent.
+  if (params.has('uploadsaves')) {
+    void (async () => {
+      const saves = await orchestrator.savedDocuments();
+      const sid = (Math.random().toString(16).slice(2) + '000000000000').slice(0, 12);
+      let sent = 0;
+      for (const save of saves) {
+        const body = JSON.stringify({
+          sid,
+          events: [{ type: 'saveUpload', t: Date.now(), name: save.name, document: save.document }],
+        });
+        if (body.length < 250_000) {
+          try {
+            const res = await fetch('/api/log', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body,
+            });
+            if (res.ok) sent += 1;
+          } catch {
+            /* counted as not sent */
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 700));
+      }
+      window.alert(`Sent ${String(sent)} of ${String(saves.length)} saves to the server.`);
+    })();
+  }
 
   // --- startup camera overrides ---------------------------------------------
   // `?camera`, `?zoom` and `?pan` predate real input and outlive it, for the

@@ -235,6 +235,12 @@ export interface OrchestratorOptions {
   /** Preset to open with. Defaults to the desktop's own default. */
   readonly presetName?: string;
   /**
+   * Start Evolve (in its default Breathe mode) as soon as the attractor pool is
+   * ready. On for the page (`?noevolve` turns it off); off for anything else
+   * that builds an orchestrator.
+   */
+  readonly autoEvolve?: boolean;
+  /**
    * What to CALL the open project, whatever it was loaded from.
    *
    * `?name=` supplies this. **DISPLAY ONLY** -- it names the project and
@@ -806,7 +812,12 @@ export class Orchestrator implements CommandBus {
     // The attractor pool loads in the background: from localStorage if this
     // browser has one, otherwise seeded from the save library, baked on the GPU. The
     // Evolve panel says "preparing" until it lands; nothing else waits on it.
-    void orchestrator.initPool();
+    void orchestrator
+      .initPool()
+      .then(() => {
+        if (opts.autoEvolve === true) orchestrator.dispatch({ kind: 'evolveStart' });
+      })
+      .catch((err: unknown) => console.warn('The attractor pool did not load:', err));
     // No camera is applied from the startup preset -- the view starts where the
     // camera's own defaults put it. See the note above `adoptPreset`.
     return orchestrator;
