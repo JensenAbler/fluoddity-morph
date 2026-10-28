@@ -448,6 +448,14 @@ async function start(): Promise<void> {
   // only ever runs after construction has returned, so the binding is always
   // assigned by the time it is read.
   let panel: Panel | null = null;
+  // THE PAGE OPENS IN FULL SCREEN: immersive mode, every piece of UI hidden
+  // (the corner button or Escape brings it back; `?ui` opens with it showing).
+  // A first-visit splash comes first, and full screen follows when it closes,
+  // so a newcomer still gets the welcome. Real browser fullscreen needs a
+  // gesture, so at load this is the hidden-UI half; see `immersive.ts`.
+  const immersiveAtStart = !params.has('ui');
+  const splashAtStart = (firstVisit || urlOptions.splash !== null) && !params.has('nosplash');
+  if (immersiveAtStart && !splashAtStart) queueMicrotask(() => panel?.toggleImmersive());
   panel = params.has('nopanel')
     ? null
     : new Panel({
@@ -473,6 +481,7 @@ async function start(): Promise<void> {
         ...(urlOptions.splash !== null ? { splashVariant: urlOptions.splash } : {}),
         // The URL settings prompt waits for this. See `askForSettings`.
         onSplashClosed: () => {
+          if (immersiveAtStart) panel?.toggleImmersive();
           void askForSettings();
         },
         // THE APP OPENS ON THE PICTURE. The panels are two 320px columns of
