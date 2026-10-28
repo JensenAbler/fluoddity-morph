@@ -525,3 +525,30 @@ test('path mode hops between physics regimes and reaches out-of-range physics as
   assert.ok(Math.abs(c.sensorGain - 17) < 0.01, `hopped over: ${c.sensorGain}`);
   assert.ok(Math.abs(c.drag + 0.6) < 0.01, `negative drag kept: ${c.drag}`);
 });
+
+test('cohort colour never jumps, even when a cold spell restarts the leg mid-fade', () => {
+  const ev = new Evolver(seeded(101));
+  ev.settings.motion = 'path';
+  ev.settings.linger = 0;
+  ev.settings.strideSeconds = 10;
+  const many = (r: number, n: number) => makeProject({
+    configs: [{ ...project(r).configs[0]!, cohorts: n, mutationScale: 0.3, colorByCohort: true }],
+    world: makeWorldSettings(),
+  });
+  ev.setPool([
+    { name: 'six', project: many(1, 6), likes: 1 },
+    { name: 'one', project: many(-1, 1), likes: 1 },
+  ]);
+  assert.ok(ev.start(many(0, 3)));
+  let prev = ev.cohortColorMix;
+  let worst = 0;
+  for (let f = 0; f < 1600; f++) {
+    // A cold spell every so often, long enough to abandon the leg mid-fade.
+    const cold = f % 400 > 180 && f % 400 < 260;
+    ev.setTemperature({ relative: cold ? 0 : 1, cold, coldFor: cold ? ((f % 400) - 180) * 0.25 : 0 });
+    ev.step(0.05);
+    worst = Math.max(worst, Math.abs(ev.cohortColorMix - prev));
+    prev = ev.cohortColorMix;
+  }
+  assert.ok(worst < 0.05, `cohort colour jumped by ${worst}`);
+});

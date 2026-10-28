@@ -534,6 +534,8 @@ export class Evolver {
   private leg: {
     from: number[][];
     fromDiscrete: Discrete;
+    /** How much cohort colour was showing when the leg began (see `cohortColor`). */
+    fromCohortColor: number;
     to: Attractor;
     origin: Attractor | null;
     u: number;
@@ -842,7 +844,14 @@ export class Evolver {
     // Once steady twists are in force, held hash floats are just where they
     // are; a new leg starts from there like everything else.
     if (!this.legacyTwists) this.hashHold = null;
-    this.leg = { from: this.genes.map((g) => [...g.x]), fromDiscrete: this.discrete, to, origin, u: 0 };
+    this.leg = {
+      from: this.genes.map((g) => [...g.x]),
+      fromDiscrete: this.discrete,
+      fromCohortColor: this.cohortColor,
+      to,
+      origin,
+      u: 0,
+    };
     this.genes.forEach((g, i) => {
       g.own = null;
       g.offsetGoal = this.offsetFor(i, spread);
@@ -956,7 +965,10 @@ export class Evolver {
     // behaviour colours around the midpoint and back, like the twists do.
     {
       const toD = discreteOf(leg.to.project);
-      const fromC = leg.fromDiscrete.colorByCohort ? 1 : 0;
+      // FROM WHERE IT ACTUALLY WAS, not from the setting it started with: a
+      // leg can begin mid-fade (cold turn-back or abandon), and starting from
+      // the setting made the cohort colours pop back in all at once.
+      const fromC = leg.fromCohortColor;
       let cc = fromC + ((toD.colorByCohort ? 1 : 0) - fromC) * e;
       if (leg.fromDiscrete.cohorts !== toD.cohorts) {
         const d = clamp(Math.abs(leg.u - 0.5) / COHORT_MELT_HALF_WIDTH, 0, 1);
