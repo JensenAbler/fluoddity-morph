@@ -39,6 +39,7 @@
  */
 
 import type { SimulationConfig, WorldSettings } from '../particleSystem/config.ts';
+import { BC } from '../particleSystem/config.ts';
 import { type Project, makeProject } from '../project/project.ts';
 
 export const RULE_GENES = 10;
@@ -586,6 +587,13 @@ export class Evolver {
   /** Breathe mode: the favorite being breathed on. */
   private home: Attractor | null = null;
   /**
+   * The world's edge behaviour in force (path and breathe modes). Each
+   * favorite's own at rest; RESET while travelling between favorites, because
+   * particles respawned into the middle take up the incoming behaviour and
+   * help it form (Jensen's find, from Eggs).
+   */
+  private boundary: number = BC.WRAP;
+  /**
    * Breathe mode's state. `t` runs 0..1 through one breath (mutation 0 at both
    * ends). `seed` is this breath's roll (steady twists, written negative);
    * `legacy` keeps the starting state's own seed until the first zero, so
@@ -840,6 +848,7 @@ export class Evolver {
       const c0 = origin.configs[0]!;
       const peak = Math.max(1e-6, this.settings.breathPeak);
       this.home = { key: -1, name: '(start)', project: origin, likes: 0 };
+      this.boundary = origin.world.boundaryConditions;
       this.breath = {
         // Start the breath where the starting state's mutation already is.
         t: Math.asin(Math.sqrt(clamp(c0.mutationScale / peak, 0, 1))) / Math.PI,
@@ -994,6 +1003,8 @@ export class Evolver {
     }
     this.cohortColor = cc;
 
+    // Edges RESET for the whole way down to a new favorite; its own otherwise.
+    this.boundary = descent !== null ? BC.RESET : this.home.project.world.boundaryConditions;
     this.pair = { a: this.home, b: b.next ?? this.home };
     this.w = b.t;
     return this.current();
@@ -1091,6 +1102,13 @@ export class Evolver {
       leg.u = u;
     }
     this.w = leg.u;
+    // Edges RESET through the middle of a leg; each favorite's own near it.
+    this.boundary =
+      leg.u > 0.1 && leg.u < 0.9
+        ? BC.RESET
+        : leg.u < 0.5
+          ? (leg.origin?.project ?? this.base!).world.boundaryConditions
+          : leg.to.project.world.boundaryConditions;
 
     const e = lingerEase(leg.u, s.linger);
     const bump = Math.sin(Math.PI * e);
@@ -1261,6 +1279,7 @@ export class Evolver {
     const rule = baseConfig.rule.slice();
     const config: Record<string, unknown> = { ...baseConfig };
     const world: Record<string, unknown> = { ...this.base.world };
+    if (this.settings.motion !== 'leash') world['boundaryConditions'] = this.boundary;
     this.genes.forEach((g, i) => {
       const gene = GENES[i]!;
       if (gene.ruleStart !== null) {

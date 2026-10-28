@@ -631,3 +631,20 @@ test('breathe: going still on the way up tops the breath out, continuing smoothl
   assert.ok(Math.max(...c) < 5, `big breath topped out early: ${Math.max(...c)}`);
   assert.ok(Math.abs(ev.current()!.configs[0]!.rule[0]! - 1) < 1e-9, 'and still arrived at the next favorite');
 });
+
+test('breathe: edges reset all the way down to a new favorite, and are its own at rest', () => {
+  const ev = new Evolver(seeded(109));
+  ev.settings.motion = 'breathe';
+  ev.settings.breathSeconds = 10;
+  ev.settings.bigEvery = 1;
+  const other = makeProject({ configs: project(1).configs, world: makeWorldSettings({ boundaryConditions: 0 }) });
+  ev.setPool([{ name: 'other', project: other, likes: 1 }]);
+  const start = makeProject({ configs: project(0).configs, world: makeWorldSettings({ boundaryConditions: 1 }) });
+  assert.ok(ev.start(start));
+  const seen: number[] = [];
+  for (let f = 0; f < 520; f++) seen.push(ev.step(0.05)!.world.boundaryConditions);
+  assert.equal(seen[10], 1, 'the start\'s own edges on the way up');
+  assert.equal(seen[300], 1, 'the start\'s own edges on the way up the big breath');
+  assert.equal(seen[420], 2, 'reset on the way down');
+  assert.equal(seen[515], 0, 'the new favorite\'s own edges once arrived');
+});
