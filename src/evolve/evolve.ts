@@ -126,6 +126,13 @@ const MUTATION_GENE = GENES.findIndex((g) => g.label === 'mutation');
  * cohort count changes. 0.2 = 40% of the leg, 10 s at the default stride.
  */
 const COHORT_MELT_HALF_WIDTH = 0.2;
+/** Breathe mode: a big breath lasts this many ordinary breaths. */
+const BIG_BREATH_STRETCH = 1.5;
+/** Breathe mode: the stretch of a big breath (0..1) over which the hop glides. */
+const BREATH_HOP_START = 0.4;
+const BREATH_HOP_END = 0.6;
+/** Breathe mode: fraction of a breath cohort colour takes to fade out / in. */
+const BREATH_COLOR_FADE = 0.15;
 /**
  * [rule gene, float within it] of the six rule floats `mutate_rule` hashes a
  * save's twist seed from: centers[4].frequency.xy, centers[7].amplitude.yx,
@@ -220,8 +227,15 @@ export type SpeedMode = 'static' | 'fluid';
  *   leash  The older design: each gene is a spring chasing a target point on
  *          its own clock. Momentum, but the target leaves each favorite before
  *          the slow genes catch up, so favorites are passed near, never reached.
+ *   breathe  AN AUTOPILOT FOR VARIETY. Sit on one favorite and breathe its
+ *          mutation slowly out (0 -> `breathPeak`) and back to 0; at 0 -- where
+ *          every roll looks the same -- re-roll the mutations, and breathe out
+ *          again into a fresh variation. Every `bigEvery` breaths, a big breath
+ *          out to `bigPeak`: at its most staticky, glide to another favorite
+ *          underneath, where the mutation hides the change, and breathe back
+ *          down on the new one. Re-rolls and hops both happen unseen.
  */
-export type MotionMode = 'path' | 'leash';
+export type MotionMode = 'path' | 'leash' | 'breathe';
 
 export interface EvolveSettings {
   /** See `MotionMode`. */
@@ -262,6 +276,14 @@ export interface EvolveSettings {
    * the steep part), easing out of one favorite and into the next.
    */
   linger: number;
+  /** Breathe mode: seconds for one ordinary breath out and back in. */
+  breathSeconds: number;
+  /** Breathe mode: how far an ordinary breath takes the mutation scale. */
+  breathPeak: number;
+  /** Breathe mode: how far a big breath -- the one that hops -- takes it. */
+  bigPeak: number;
+  /** Breathe mode: every how many breaths is a big one (0 = stay put). */
+  bigEvery: number;
   /**
    * Seconds for colors to settle on a new favorite's palette. Color follows
    * the FOCUS favorite on this slow clock, not the moving line -- the log had
@@ -290,6 +312,10 @@ export const DEFAULT_SETTINGS: EvolveSettings = {
   colorSeconds: 240,
   familyHop: 0.15,
   linger: 0.4,
+  breathSeconds: 40,
+  breathPeak: 3.5,
+  bigPeak: 10,
+  bigEvery: 4,
 };
 
 /**
@@ -558,6 +584,28 @@ export class Evolver {
   private hashHold: number[] | null = null;
   /** 0..1: how much of colour-by-cohort is showing (see `cohortColorMix`). */
   private cohortColor = 0;
+  /** Breathe mode: the favorite being breathed on. */
+  private home: Attractor | null = null;
+  /**
+   * Breathe mode's state. `t` runs 0..1 through one breath (mutation 0 at both
+   * ends). `seed` is this breath's roll (steady twists, written negative);
+   * `legacy` keeps the starting state's own seed until the first zero, so
+   * pressing Evolve changes nothing. `next`/`from` are the glide of a hop;
+   * `pending` the cohort count and layout that wait for the next zero, when
+   * every cohort is identical and the re-deal is unseen; `colorIn` marks the
+   * breath whose start fades cohort colour back in after such a change.
+   */
+  private breath = {
+    t: 0,
+    count: 0,
+    big: false,
+    seed: 0.5,
+    legacy: false,
+    next: null as Attractor | null,
+    from: null as number[][] | null,
+    pending: null as Discrete | null,
+    colorIn: false,
+  };
 
   /**
    * How much of colour-by-cohort the camera should show, 0..1: the evolver
@@ -788,6 +836,23 @@ export class Evolver {
     this.discrete = discreteOf(origin);
     this.cohortColor = this.discrete.colorByCohort ? 1 : 0;
     {
+      const c0 = origin.configs[0]!;
+      const peak = Math.max(1e-6, this.settings.breathPeak);
+      this.home = { key: -1, name: '(start)', project: origin, likes: 0 };
+      this.breath = {
+        // Start the breath where the starting state's mutation already is.
+        t: Math.asin(Math.sqrt(clamp(c0.mutationScale / peak, 0, 1))) / Math.PI,
+        count: 0,
+        big: false,
+        seed: Math.max(1e-3, Math.abs(c0.mutationSeed)),
+        legacy: c0.mutationScale !== 0 && c0.mutationSeed >= 0,
+        next: null,
+        from: null,
+        pending: null,
+        colorIn: false,
+      };
+    }
+    {
       const c = origin.configs[0]!;
       this.legacyTwists = this.settings.motion === 'path' && c.cohorts > 1 && c.mutationScale !== 0 && c.mutationSeed >= 0;
       this.hashHold = this.legacyTwists ? HASH_LANES.map(([gi, k]) => geneOf(origin, gi)[k]!) : null;
@@ -833,6 +898,81 @@ export class Evolver {
 
   stop(): void {
     this.running = false;
+  }
+
+  /** Breathe mode's frame -- see `MotionMode`. */
+  private stepBreathe(dt: number): Project | null {
+    const s = this.settings;
+    const b = this.breath;
+    if (this.home === null) return null;
+    const peak = b.big ? s.bigPeak : s.breathPeak;
+    b.t += dt / (Math.max(5, s.breathSeconds) * (b.big ? BIG_BREATH_STRETCH : 1));
+
+    // THE HOP, at the top of a big breath: every gene glides to the next
+    // favorite while the mutation is at its loudest and hides the change.
+    if (b.big && b.next === null && b.from === null && b.t >= BREATH_HOP_START) {
+      this.nextFocus();
+      const next = this.focus !== null && this.focus !== this.home ? this.focus : this.otherThan(this.home);
+      b.next = next;
+      b.from = this.genes.map((g) => [...g.x]);
+      this.hopping = familyOf(this.home.project) !== familyOf(next.project);
+    }
+    if (b.next !== null && b.from !== null) {
+      const k0 = clamp((b.t - BREATH_HOP_START) / (BREATH_HOP_END - BREATH_HOP_START), 0, 1);
+      const k = k0 * k0 * (3 - 2 * k0);
+      const from = b.from;
+      const next = b.next;
+      this.genes.forEach((g, i) => {
+        if (i === MUTATION_GENE) return;
+        const to = geneOf(next.project, i);
+        g.x = from[i]!.map((a, j) => a + k * ((to[j] ?? a) - a));
+      });
+      if (k0 >= 1) {
+        this.home = next;
+        b.pending = discreteOf(next.project);
+        b.next = null;
+        b.from = null;
+        this.hopping = false;
+      }
+    }
+
+    // ZERO: every cohort is identical, so re-roll and apply any waiting cohort
+    // count or layout -- both unseen.
+    if (b.t >= 1) {
+      b.t = Math.min(0.5, b.t - 1);
+      b.count += 1;
+      // The Nth breath is the big one: after N-1 zeros.
+      b.big = s.bigEvery > 0 && (b.count + 1) % Math.round(s.bigEvery) === 0;
+      b.seed = 1e-3 + this.rng() * 0.998;
+      b.legacy = false;
+      if (b.pending !== null) {
+        const d = this.discrete;
+        b.colorIn = b.pending.cohorts !== d.cohorts || b.pending.colorByCohort !== d.colorByCohort;
+        this.discrete = b.pending;
+        b.pending = null;
+      }
+    }
+
+    const m = this.genes[MUTATION_GENE]!;
+    m.x = [Math.max(0, peak) * Math.sin(Math.PI * b.t) ** 2];
+
+    // Cohort colour fades out before a change of count or colour mode lands
+    // at the zero, and back in after it.
+    const target = this.discrete.colorByCohort ? 1 : 0;
+    let cc = target;
+    const p = b.pending;
+    if (p !== null && (p.cohorts !== this.discrete.cohorts || p.colorByCohort !== this.discrete.colorByCohort)) {
+      cc *= clamp((1 - b.t) / BREATH_COLOR_FADE, 0, 1);
+    }
+    if (b.colorIn) {
+      cc = target * clamp(b.t / BREATH_COLOR_FADE, 0, 1);
+      if (b.t >= BREATH_COLOR_FADE) b.colorIn = false;
+    }
+    this.cohortColor = cc;
+
+    this.pair = { a: this.home, b: b.next ?? this.home };
+    this.w = b.t;
+    return this.current();
   }
 
   /**
@@ -992,7 +1132,7 @@ export class Evolver {
     this.focusClock += dt;
     let focusChanged = false;
     // In path mode the next favorite is chosen on ARRIVAL, not on a clock.
-    if (s.motion !== 'path' && this.focusClock >= s.focusSeconds) {
+    if (s.motion === 'leash' && this.focusClock >= s.focusSeconds) {
       this.nextFocus();
       focusChanged = true;
     }
@@ -1009,6 +1149,7 @@ export class Evolver {
     }
 
     if (s.motion === 'path') return this.stepPath(dt);
+    if (s.motion === 'breathe') return this.stepBreathe(dt);
 
     // THE TARGET POINT glides at a steady pace along its line. At an end it
     // either turns back (momentum kept, direction flipped) or -- if the focus
@@ -1124,9 +1265,14 @@ export class Evolver {
     config['initialConditions'] = this.discrete.initialConditions;
     config['cohortFences'] = this.discrete.cohortFences;
     config['colorByCohort'] = this.cohortColor > 0;
-    config['mutationSeed'] = this.legacyTwists
-      ? baseConfig.mutationSeed
-      : -Math.max(1e-6, Math.abs(baseConfig.mutationSeed));
+    config['mutationSeed'] =
+      this.settings.motion === 'breathe'
+        ? this.breath.legacy
+          ? baseConfig.mutationSeed
+          : -this.breath.seed
+        : this.legacyTwists
+          ? baseConfig.mutationSeed
+          : -Math.max(1e-6, Math.abs(baseConfig.mutationSeed));
     return makeProject({
       configs: [config as unknown as SimulationConfig],
       world: world as unknown as WorldSettings,

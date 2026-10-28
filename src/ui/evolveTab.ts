@@ -54,6 +54,10 @@ const SPEED_SLIDERS: readonly SliderSpec[] = [
 ];
 
 const LEASH_SLIDERS: readonly SliderSpec[] = [
+  { key: 'breathSeconds', label: 'breath', min: 10, max: 180, step: 5, unit: 's', title: 'Breathe mode: seconds for one breath of mutation out and back' },
+  { key: 'breathPeak', label: 'breath peak', min: 0.5, max: 6, step: 0.25, title: 'Breathe mode: how far an ordinary breath takes the mutation' },
+  { key: 'bigPeak', label: 'big peak', min: 2, max: 20, step: 0.5, title: 'Breathe mode: how far a big breath takes it, at the top of which it hops to another favorite' },
+  { key: 'bigEvery', label: 'big every', min: 0, max: 10, step: 1, title: 'Breathe mode: every how many breaths is a big one that hops (0 = stay on this favorite)' },
   { key: 'coherence', label: 'coherence', min: 0, max: 1, step: 0.05, title: 'High: genes mostly orbit the focus favorite (whole creatures). Low: genes from different favorites recombine' },
   { key: 'ruleWander', label: 'rule wander', min: 0, max: 0.8, step: 0.01, title: 'Random jitter on top of exploration, in units of your favorites own spread' },
   { key: 'settingWander', label: 'setting wander', min: 0, max: 0.3, step: 0.005, title: 'How far sensor/force/color/trail settings may stray, as a fraction of slider range' },
@@ -123,6 +127,7 @@ export class EvolveTab {
     for (const [v, l] of [
       ['path', 'Path — walk through favorites'],
       ['leash', 'Leash — springs chase'],
+      ['breathe', 'Breathe — mutate a favorite'],
     ] as const) {
       const o = document.createElement('option');
       o.value = v;
@@ -132,7 +137,10 @@ export class EvolveTab {
     this.motionSelect.addEventListener('change', () =>
       send({
         kind: 'evolveSettings',
-        settings: { motion: this.motionSelect.value === 'leash' ? 'leash' : 'path' },
+        settings: {
+          motion:
+            this.motionSelect.value === 'leash' ? 'leash' : this.motionSelect.value === 'breathe' ? 'breathe' : 'path',
+        },
       }),
     );
     transport.append(this.motionSelect);

@@ -552,3 +552,47 @@ test('cohort colour never jumps, even when a cold spell restarts the leg mid-fad
   }
   assert.ok(worst < 0.05, `cohort colour jumped by ${worst}`);
 });
+
+test('breathe: mutation breathes 0 -> peak -> 0, re-rolls at zero, hops at the top of a big breath', () => {
+  const ev = new Evolver(seeded(103));
+  ev.settings.motion = 'breathe';
+  ev.settings.breathSeconds = 10;
+  ev.settings.breathPeak = 3;
+  ev.settings.bigPeak = 10;
+  ev.settings.bigEvery = 2;
+  const other = makeProject({
+    configs: [{ ...project(1).configs[0]!, cohorts: 8 }],
+    world: makeWorldSettings(),
+  });
+  ev.setPool([{ name: 'other', project: other, likes: 1 }]);
+  assert.ok(ev.start(project(0)));
+  const dt = 0.05;
+  let c = ev.step(dt)!.configs[0]!;
+  const seed0 = c.mutationSeed;
+  let maxScale = 0;
+  let f = 0;
+  // One ordinary breath (10 s = 200 frames): until the seed re-rolls.
+  while (c.mutationSeed === seed0 && f++ < 220) {
+    maxScale = Math.max(maxScale, c.mutationScale);
+    assert.equal(c.rule[0], 0, 'an ordinary breath stays on its favorite');
+    c = ev.step(dt)!.configs[0]!;
+  }
+  assert.ok(f > 190 && f < 210, `one breath is about 200 frames: ${f}`);
+  assert.ok(Math.abs(maxScale - 3) < 0.05, `ordinary breath peaks near 3: ${maxScale}`);
+  assert.ok(c.mutationScale < 0.01, `re-rolled at the zero: ${c.mutationScale}`);
+  assert.ok(c.mutationSeed < 0, 'steady twists');
+  // Breath 2 is big (15 s): it peaks near 10 and hops underneath.
+  let bigMax = 0;
+  const cohortsWhileTwisted = new Set<number>();
+  for (let i = 0; i < 290; i++) {
+    c = ev.step(dt)!.configs[0]!;
+    bigMax = Math.max(bigMax, c.mutationScale);
+    if (c.mutationScale > 1) cohortsWhileTwisted.add(c.cohorts);
+  }
+  assert.ok(Math.abs(bigMax - 10) < 0.1, `big breath peaks near 10: ${bigMax}`);
+  assert.ok(Math.abs(c.rule[0]! - 1) < 1e-9, 'hopped to the other favorite');
+  assert.deepEqual([...cohortsWhileTwisted], [1], 'the cohort count never changes while twists are showing');
+  for (let i = 0; i < 20 && c.cohorts !== 8; i++) c = ev.step(dt)!.configs[0]!;
+  assert.equal(c.cohorts, 8, 'it lands at the zero');
+  assert.ok(c.mutationScale < 0.05, `at the zero: ${c.mutationScale}`);
+});
