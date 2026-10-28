@@ -119,6 +119,13 @@ export const GENES: readonly GeneDef[] = [
 ];
 
 export const GENE_COUNT = GENES.length;
+const MUTATION_GENE = GENES.findIndex((g) => g.label === 'mutation');
+/**
+ * Path mode: how far either side of a leg's midpoint (as a fraction of the
+ * leg's time) the cohort twists take to melt away and to come back when the
+ * cohort count changes. 0.2 = 40% of the leg, 10 s at the default stride.
+ */
+const COHORT_MELT_HALF_WIDTH = 0.2;
 
 export function geneFamily(i: number): GeneFamily {
   return GENES[i]!.family;
@@ -849,6 +856,17 @@ export class Evolver {
       clampGene(i, g.x);
       g.v = g.x.map((x, k) => (dt > 0 ? (x - (prev[i]![k] ?? x)) / dt : 0));
     });
+    // MELT, SWAP, SEPARATE. A change of cohort count reassigns almost every
+    // particle to a new cohort in one frame (`get_cohort`), which pops. So when
+    // this leg changes the count, the cohorts' twists fade to nothing around
+    // the midpoint -- every cohort briefly obeys the same rule -- the count
+    // switches there, invisibly, and the twists fade back in.
+    if (leg.fromDiscrete.cohorts !== discreteOf(leg.to.project).cohorts) {
+      const d = clamp(Math.abs(leg.u - 0.5) / COHORT_MELT_HALF_WIDTH, 0, 1);
+      const k = d * d * (3 - 2 * d);
+      const m = this.genes[MUTATION_GENE]!;
+      m.x = m.x.map((v) => v * k);
+    }
     return this.current();
   }
 

@@ -463,8 +463,12 @@ test('cohorts are carried: count switches mid-leg, mutation blends, seed asks fo
   let c = ev.step(0.05)!.configs[0]!;
   assert.equal(c.cohorts, 1, 'starts with the start state\'s cohorts');
   assert.ok(c.mutationSeed < 0, 'a negative seed asks the shader for steady twists');
-  for (let f = 0; f < 120; f++) c = ev.step(0.05)!.configs[0]!; // 6 s: past halfway
+  for (let f = 0; f < 99; f++) c = ev.step(0.05)!.configs[0]!; // 5 s: the midpoint
+  assert.ok(c.mutationScale < 0.002, `twists melted away at the switch: ${c.mutationScale}`);
+  for (let f = 0; f < 21; f++) c = ev.step(0.05)!.configs[0]!; // 6 s: past halfway
   assert.equal(c.cohorts, 16, 'switched to the favorite\'s cohort count');
   assert.equal(c.initialConditions, 3, 'and its starting layout');
-  assert.ok(c.mutationScale > 0.1 && c.mutationScale < 0.2, `mutation blends: ${c.mutationScale}`);
+  assert.ok(c.mutationScale > 0 && c.mutationScale < 0.1, `twists coming back: ${c.mutationScale}`);
+  for (let f = 0; f < 60; f++) c = ev.step(0.05)!.configs[0]!; // 9 s: melt over
+  assert.ok(Math.abs(c.mutationScale - 0.18) < 0.01, `mutation blends: ${c.mutationScale}`);
 });
