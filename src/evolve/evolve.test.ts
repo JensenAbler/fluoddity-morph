@@ -597,6 +597,48 @@ test('breathe: mutation breathes 0 -> peak -> 0, re-rolls at zero, hops at the t
   assert.ok(Math.abs(c.rule[0]! - 1) < 1e-9, 'arrived at the other favorite');
 });
 
+test('breathe orbit: breaths overlap and swing past the favorite; 0 keeps them meeting at zero', () => {
+  const run = (orbit: number) => {
+    const ev = new Evolver(seeded(211));
+    ev.settings.motion = 'breathe';
+    ev.settings.breathSeconds = 10;
+    ev.settings.breathPeak = 3;
+    ev.settings.bigEvery = 0;
+    ev.settings.orbit = orbit;
+    ev.setPool([{ name: 'other', project: project(1), likes: 1 }]);
+    assert.ok(ev.start(project(0)));
+    const totals: number[] = [];
+    let maxSecond = 0;
+    const seeds = new Set<number>();
+    for (let i = 0; i < 1200; i++) {
+      const c = ev.step(0.05)!.configs[0]!;
+      const second = c.mutationScale2 ?? 0;
+      maxSecond = Math.max(maxSecond, second);
+      totals.push(c.mutationScale + second);
+      seeds.add(c.mutationSeed);
+      assert.equal(c.rule[0], 0, 'orbiting stays on its favorite');
+      if (second > 0) assert.ok((c.mutationSeed2 ?? 0) < 0 && c.mutationSeed2 !== c.mutationSeed, 'the fading voice has its own steady roll');
+    }
+    return { totals, maxSecond, seeds };
+  };
+  const still = run(0);
+  assert.equal(still.maxSecond, 0, 'orbit 0: one voice only');
+  assert.ok(Math.min(...still.totals.slice(200)) < 0.01, 'orbit 0: back to the favorite every breath');
+
+  const orbiting = run(0.5);
+  assert.ok(orbiting.maxSecond > 0.5, `orbit 0.5: a second voice fades out: ${orbiting.maxSecond}`);
+  assert.ok(orbiting.seeds.size > 4, 'fresh rolls keep coming');
+  const floor = Math.min(...orbiting.totals.slice(200));
+  assert.ok(floor > 0.5, `orbit 0.5: never back at the favorite once orbiting: ${floor}`);
+  // No jumps: the hand-over between voices is continuous.
+  const t = orbiting.totals;
+  for (let i = 1; i < t.length; i++) assert.ok(Math.abs(t[i]! - t[i - 1]!) < 0.1, `no jump at ${i}`);
+
+  const across = run(1);
+  const acrossFloor = Math.min(...across.totals.slice(200));
+  assert.ok(acrossFloor > floor, `orbit 1 stays farther out than 0.5: ${acrossFloor} vs ${floor}`);
+});
+
 test('breathe: going still on the way up tops the breath out, continuing smoothly downward', () => {
   const ev = new Evolver(seeded(107));
   ev.settings.motion = 'breathe';

@@ -291,6 +291,15 @@ export interface EvolveSettings {
   /** Breathe mode: every how many breaths is a big one (0 = stay put). */
   bigEvery: number;
   /**
+   * Breathe mode, 0..1: how much consecutive breaths OVERLAP. 0 = each breath
+   * comes all the way back to the favorite before the next sets out (straight
+   * out and back, a plus sign). Higher = the next breath starts while the last
+   * is still coming down, so the way from one mutation to the next swings PAST
+   * the favorite, nearer the higher this is; 1 = straight across, mutation to
+   * mutation, never near it.
+   */
+  orbit: number;
+  /**
    * Seconds for colors to settle on a new favorite's palette. Color follows
    * the FOCUS favorite on this slow clock, not the moving line -- the log had
    * "worn out from how fast and often the color changes".
@@ -322,6 +331,7 @@ export const DEFAULT_SETTINGS: EvolveSettings = {
   breathPeak: 0.5,
   bigPeak: 4,
   bigEvery: 4,
+  orbit: 0,
 };
 
 /**
@@ -622,6 +632,12 @@ export class Evolver {
     colorInT: 0,
     /** A big breath that topped out early descends from here, not the peak. */
     descentPeak: null as number | null,
+    /**
+     * Orbit: the breath before this one, still on its way down while this one
+     * rises -- its own seed, phase and peak. Rendered as the second mutation
+     * voice (`mutationScale2`/`mutationSeed2`). Null when nothing overlaps.
+     */
+    prev: null as { seed: number; t: number; peak: number } | null,
   };
 
   /**
@@ -887,6 +903,7 @@ export class Evolver {
         colorIn: false,
         colorInT: 0,
         descentPeak: null,
+        prev: null,
       };
     }
     {
@@ -944,6 +961,11 @@ export class Evolver {
     if (this.home === null) return null;
     const peak = b.big ? s.bigPeak : s.breathPeak;
     b.t += dt / (Math.max(5, s.breathSeconds) * (b.big ? BIG_BREATH_STRETCH : 1));
+    // The fading voice (Orbit) keeps its own clock down to its zero.
+    if (b.prev !== null) {
+      b.prev.t += dt / Math.max(5, s.breathSeconds);
+      if (b.prev.t >= 1) b.prev = null;
+    }
 
     // TOP OUT EARLY. If the particles go still on the way up, this breath has
     // gone as far as it should: turn around now and breathe down as if from
@@ -990,6 +1012,33 @@ export class Evolver {
         g.x = from[i]!.map((a, j) => a + ee * ((to[j] ?? a) - a));
         clampPath(i, g.x, from[i]!, to);
       });
+    }
+
+    // ORBIT: set out on the next breath BEFORE this one is back at zero, with a
+    // fresh roll, while this one carries on down as the second voice. The way
+    // from this mutation to the next then swings past the favorite instead of
+    // through it. Only between ordinary breaths on one favorite: a big breath
+    // and the breaths either side of it still meet at zero, where the hop, the
+    // cohort re-deal and the colour fades are hidden.
+    {
+      const orbit = clamp(s.orbit, 0, 1);
+      const nextBig = s.bigEvery > 0 && (b.count + 2) % Math.round(s.bigEvery) === 0;
+      if (
+        orbit > 0 &&
+        !b.big &&
+        !nextBig &&
+        !b.legacy &&
+        b.next === null &&
+        b.prev === null &&
+        b.t >= 1 - orbit / 2 &&
+        b.t < 1
+      ) {
+        b.prev = { seed: b.seed, t: b.t, peak };
+        b.t = 0;
+        b.count += 1;
+        b.seed = 1e-3 + this.rng() * 0.998;
+        b.descentPeak = null;
+      }
     }
 
     // ZERO: every cohort is identical, so re-roll and land any new favorite's
@@ -1353,6 +1402,11 @@ export class Evolver {
         : this.legacyTwists
           ? baseConfig.mutationSeed
           : -Math.max(1e-6, Math.abs(baseConfig.mutationSeed));
+    // THE SECOND VOICE (Orbit): the breath still fading out. Always written,
+    // so a base that carried one never leaks it into what is shown now.
+    const fading = this.settings.motion === 'breathe' ? this.breath.prev : null;
+    config['mutationScale2'] = fading !== null ? Math.max(0, fading.peak * Math.sin(Math.PI * fading.t) ** 2) : 0;
+    config['mutationSeed2'] = fading !== null ? -fading.seed : 0;
     return makeProject({
       configs: [config as unknown as SimulationConfig],
       world: world as unknown as WorldSettings,

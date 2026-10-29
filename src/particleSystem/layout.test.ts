@@ -24,14 +24,14 @@ import {
 test('struct sizes are the ones every hardcoded stride assumes', () => {
   assert.equal(layoutOf('FourierCenter').size, 32);
   assert.equal(layoutOf('Rule').size, 320);
-  assert.equal(layoutOf('ConfigData').size, 416);
+  assert.equal(layoutOf('ConfigData').size, 432);
   assert.equal(layoutOf('WorldData').size, 32);
   assert.equal(layoutOf('Entity').size, 32);
 
-  assert.equal(CONFIG_DATA_STRIDE, 416);
+  assert.equal(CONFIG_DATA_STRIDE, 432);
   assert.equal(WORLD_DATA_SIZE, 32);
   assert.equal(ENTITY_STRIDE, 32);
-  assert.equal(CONFIG_DATA_FLOATS, 104);
+  assert.equal(CONFIG_DATA_FLOATS, 108);
 });
 
 // Names and order, so a rename or reordering that preserves sizes is still
@@ -39,7 +39,7 @@ test('struct sizes are the ones every hardcoded stride assumes', () => {
 test('struct members match common.wgsl in name and order', () => {
   assert.deepEqual(
     CONFIG_DATA.members.map((m) => m.name),
-    ['rule', 'sensor', 'force', 'misc', 'force2', 'misc2', 'misc3'],
+    ['rule', 'sensor', 'force', 'misc', 'force2', 'misc2', 'misc3', 'misc4'],
   );
   assert.deepEqual(
     layoutOf('WorldData').members.map((m) => m.name),
@@ -67,6 +67,7 @@ test('ConfigData member byte offsets are the documented ones', () => {
     force2: 368,
     misc2: 384,
     misc3: 400,
+    misc4: 416,
   });
 });
 

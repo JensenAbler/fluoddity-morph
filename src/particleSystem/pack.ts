@@ -127,6 +127,10 @@ export function writeConfigRecord(
   // Raw: the shader floors its magnitude (cfg_trail_weight), so a stored 0
   // is safe without the host having to agree on the rule.
   f32[base + LANE.misc3 + 3] = config.trailWeight; // cfg_trail_weight()
+
+  // misc4: mutation_scale_2, mutation_seed_2 -- runtime only (evolver Orbit).
+  f32[base + LANE.misc4 + 0] = config.mutationScale2 ?? 0; // cfg_mutation_scale_2()
+  f32[base + LANE.misc4 + 1] = config.mutationSeed2 ?? 0; // cfg_mutation_seed_2()
 }
 
 /**

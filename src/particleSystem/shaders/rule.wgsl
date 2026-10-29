@@ -188,5 +188,14 @@ fn derive_entity_rule(rule_in: Rule, cohort: f32, config: ConfigData) -> Rule {
     }
 
     // Each cohort gets a random mutation.
-    return mutate_rule(rule_in, cfg_mutation_scale(config), rule_seed, stable);
+    var rule = mutate_rule(rule_in, cfg_mutation_scale(config), rule_seed, stable);
+
+    // THE SECOND VOICE (evolver Orbit): a breath still fading out while the
+    // next fades in. Layered on top of the first, its own seed, stable twists.
+    // Scale 0 in every saved state, so this branch is never taken for them.
+    let scale_2 = cfg_mutation_scale_2(config);
+    if (scale_2 != 0.0) {
+        rule = mutate_rule(rule, scale_2, abs(cfg_mutation_seed_2(config)) + floor(cohort), true);
+    }
+    return rule;
 }

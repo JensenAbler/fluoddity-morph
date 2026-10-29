@@ -41,8 +41,8 @@
       ]
     },
     "ConfigData": {
-      "size": 416,
-      "float32Count": 104,
+      "size": 432,
+      "float32Count": 108,
       "members": [
         {
           "name": "rule",
@@ -98,6 +98,14 @@
           "size": 16,
           "type": "vec4",
           "floatIndex": 100,
+          "floatCount": 4
+        },
+        {
+          "name": "misc4",
+          "offset": 416,
+          "size": 16,
+          "type": "vec4",
+          "floatIndex": 104,
           "floatCount": 4
         }
       ]

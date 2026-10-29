@@ -206,7 +206,13 @@ struct ConfigData {
     // and Trail Weight in .w. No spares left.
     misc3: vec4f,  // x: radial_gravity(i)     y: gravity_trails
                    // z: color_offset          w: trail_weight
-}  // 416 bytes
+    // misc3 had no spares left, so the evolver's SECOND mutation voice is rule
+    // 2's "add a whole new vec4" case. RUNTIME ONLY: never saved, always 0 in
+    // a loaded state, so every saved state packs and behaves exactly as before.
+    // Breathe mode's Orbit overlaps two breaths, and the fading one rides here.
+    misc4: vec4f,  // x: mutation_scale_2      y: mutation_seed_2
+                   // z: reserved              w: reserved
+}  // 432 bytes
 
 fn cfg_sensor_gain(c: ConfigData) -> f32     { return c.sensor.x; }
 fn cfg_sensor_angle(c: ConfigData) -> f32    { return c.sensor.y; }
@@ -224,6 +230,10 @@ fn cfg_cohorts(c: ConfigData) -> i32       { return bitcast<i32>(c.misc.z); }
 // Which random variation the rule mutation uses. Per-config rather than a
 // uniform, so different particle populations can mutate differently.
 fn cfg_mutation_seed(c: ConfigData) -> f32 { return c.misc.w; }
+// A second, independent mutation layered on the first (evolver Orbit only).
+// Scale 0 = absent. The seed is always used in stable mode (see mutate_rule).
+fn cfg_mutation_scale_2(c: ConfigData) -> f32 { return c.misc4.x; }
+fn cfg_mutation_seed_2(c: ConfigData) -> f32  { return c.misc4.y; }
 
 // Uniform pull on the whole population, in the two motion channels the rest of
 // the physics uses: _force feeds velocity, _strafe displaces position directly.

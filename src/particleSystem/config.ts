@@ -77,6 +77,7 @@ export const LANE = {
   //              z: sensor_angle_jitter w: sensor_distance_jitter
   misc3: 100, //  x: radial_gravity(i)   y: gravity_trails
   //              z: color_offset        w: trail_weight
+  misc4: 104, //  x: mutation_scale_2    y: mutation_seed_2  (runtime only)
 } as const;
 
 /** Float32 lane indices within a `WorldData` record. */
@@ -205,6 +206,13 @@ export interface SimulationConfig {
    * `configSlots`.
    */
   readonly trailWeight: number;
+  /**
+   * RUNTIME ONLY, never saved: a second mutation layered on the first, with
+   * its own seed (always stable twists). Breathe mode's Orbit puts the breath
+   * still fading out here while the next one fades in. Absent = 0 = no effect.
+   */
+  readonly mutationScale2?: number;
+  readonly mutationSeed2?: number;
   /** 80 floats -> 10 FourierCenters, each frequency(4) + amplitude(4). */
   readonly rule: readonly number[];
 }

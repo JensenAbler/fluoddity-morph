@@ -93,7 +93,7 @@ export const WORLD_DATA_SIZE = WORLD_DATA.size;
 /** Stride between consecutive `Entity` records in the EntityBuffer. */
 export const ENTITY_STRIDE = ENTITY.size;
 
-/** Float32 lanes per ConfigData record. 416 / 4 = 104. */
+/** Float32 lanes per ConfigData record. 432 / 4 = 108. */
 export const CONFIG_DATA_FLOATS = CONFIG_DATA.float32Count;
 
 /**
@@ -105,7 +105,7 @@ export const CONFIG_DATA_FLOATS = CONFIG_DATA.float32Count;
 const EXPECTED_SIZES: Readonly<Record<string, number>> = {
   FourierCenter: 32,
   Rule: 320,
-  ConfigData: 416,
+  ConfigData: 432,
   WorldData: 32,
   Entity: 32,
 };

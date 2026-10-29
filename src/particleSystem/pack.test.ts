@@ -80,10 +80,10 @@ const views = (buffer: ArrayBuffer) => ({
 // Sizes and striding
 // ---------------------------------------------------------------------------
 
-test('a config record is exactly 416 bytes and n configs are n x 416', () => {
-  assert.equal(CONFIG_DATA_STRIDE, 416);
-  assert.equal(packConfigs([distinctConfig()]).byteLength, 416);
-  assert.equal(packConfigs([distinctConfig(), distinctConfig()]).byteLength, 832);
+test('a config record is exactly 432 bytes and n configs are n x 432', () => {
+  assert.equal(CONFIG_DATA_STRIDE, 432);
+  assert.equal(packConfigs([distinctConfig()]).byteLength, 432);
+  assert.equal(packConfigs([distinctConfig(), distinctConfig()]).byteLength, 864);
   assert.equal(packConfigs([]).byteLength, 0);
 });
 
@@ -91,12 +91,12 @@ test('packConfigs of an empty list produces zero bytes without throwing', () => 
   assert.doesNotThrow(() => packConfigs([]));
 });
 
-test('consecutive configs are packed at stride 416 with no overlap', () => {
+test('consecutive configs are packed at stride 432 with no overlap', () => {
   const a = distinctConfig({ sensorGain: 111 });
   const b = distinctConfig({ sensorGain: 222 });
   const { f32 } = views(packConfigs([a, b]));
 
-  const floatsPerRecord = CONFIG_DATA_STRIDE / 4; // 104
+  const floatsPerRecord = CONFIG_DATA_STRIDE / 4; // 108
   assert.equal(f32[LANE.sensor], 111);
   assert.equal(f32[floatsPerRecord + LANE.sensor], 222);
   // The second record's rule must start right after the first record ends.
@@ -373,10 +373,28 @@ const TRAIL_WEIGHT_LANE = LANE.misc3 + 3;
 
 const DIVERGED_LANES = [FENCE_LANE, TRAIL_WEIGHT_LANE];
 
+/**
+ * The golden is the Python's 416-byte record; `misc4` (the evolver's runtime-only
+ * second mutation voice) was appended after it, and is always 0 for a saved
+ * config. Compare the first 104 lanes of each record, and check misc4 apart.
+ */
+const LEGACY_FLOATS = 104;
+function toLegacy(buffer: ArrayBuffer): ArrayBuffer {
+  const words = new Int32Array(buffer);
+  const per = CONFIG_DATA_STRIDE / 4;
+  const n = words.length / per;
+  const out = new Int32Array(n * LEGACY_FLOATS);
+  for (let i = 0; i < n; i++) {
+    for (let k = per - 4; k < per; k++) assert.equal(words[i * per + k], 0, `misc4 lane ${k} is 0 for a saved config`);
+    out.set(words.subarray(i * per, i * per + LEGACY_FLOATS), i * LEGACY_FLOATS);
+  }
+  return out.buffer;
+}
+
 /** `toHex`, with the diverged lanes zeroed in every config record. */
 function toHexMasked(buffer: ArrayBuffer): string {
   const words = new Int32Array(buffer.slice(0));
-  for (let base = 0; base < words.length; base += CONFIG_DATA_STRIDE / 4) {
+  for (let base = 0; base < words.length; base += LEGACY_FLOATS) {
     for (const lane of DIVERGED_LANES) words[base + lane] = 0;
   }
   return toHex(words.buffer);
@@ -397,7 +415,7 @@ function maskGolden(hex: string): string {
 // the lanes whose MEANING changed. See `DIVERGED_LANES`.
 test('parity: a packed config record is byte-identical to the Python', () => {
   assert.equal(
-    toHexMasked(packConfigs([parityConfig()])),
+    toHexMasked(toLegacy(packConfigs([parityConfig()]))),
     maskGolden(PARITY.packing.configRecordHex),
   );
 });
@@ -405,7 +423,7 @@ test('parity: a packed config record is byte-identical to the Python', () => {
 test('parity: two packed configs are byte-identical to the Python', () => {
   const config = parityConfig();
   assert.equal(
-    toHexMasked(packConfigs([config, config])),
+    toHexMasked(toLegacy(packConfigs([config, config]))),
     maskGolden(PARITY.packing.twoConfigHex),
   );
 });
@@ -452,4 +470,16 @@ test('parity: int-lane bit patterns match the Python', () => {
     new Int32Array(buffer)[0] = c.int;
     assert.equal(toHex(buffer), c.hex, `int ${c.int}`);
   }
+});
+
+test('misc4 carries the evolver\'s second mutation voice, and is 0 when absent', () => {
+  const absent = views(packConfigs([distinctConfig()]));
+  assert.equal(absent.f32[LANE.misc4 + 0], 0);
+  assert.equal(absent.f32[LANE.misc4 + 1], 0);
+  const { f32 } = views(packConfigs([{ ...distinctConfig(), mutationScale2: 1.5, mutationSeed2: -0.25 }]));
+  assert.equal(f32[LANE.misc4 + 0], 1.5);
+  assert.equal(f32[LANE.misc4 + 1], -0.25);
+  // The first voice is untouched.
+  assert.equal(f32[LANE.sensor + 3], 4.25);
+  assert.equal(f32[LANE.misc + 3], 0.125);
 });
