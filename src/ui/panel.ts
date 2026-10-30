@@ -748,6 +748,8 @@ export class Panel {
     this.morphPanel = new MorphPanel({ send, mobile: this.mobile });
     this.immersive.setMarkHandler((mark, note) => {
       send({ kind: 'logMark', mark, ...(note !== undefined ? { note } : {}) });
+      // Thumbs up is also a like: in Breathe mode it makes this the new center.
+      if (mark === 'up') send({ kind: 'evolveLike' });
     });
     this.dialogs = new Dialogs({
       send,

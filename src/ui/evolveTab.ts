@@ -150,8 +150,11 @@ export class EvolveTab {
     const marksLabel = document.createElement('span');
     marksLabel.textContent = 'Mark this moment:';
     marksLabel.style.cssText = MUTED;
-    const up = this.button('👍', ICON + 'font-size:1.1em;', () => send({ kind: 'logMark', mark: 'up' }));
-    up.title = 'Log: this is good (Y)';
+    const up = this.button('👍', ICON + 'font-size:1.1em;', () => {
+      send({ kind: 'logMark', mark: 'up' });
+      send({ kind: 'evolveLike' });
+    });
+    up.title = 'This is good: log it and like it (in Breathe mode, it becomes the new center)';
     const down = this.button('👎', ICON + 'font-size:1.1em;', () => send({ kind: 'logMark', mark: 'down' }));
     down.title = 'Log: this is bad (N)';
     const note = this.button('📝', ICON + 'font-size:1.1em;', () => {
