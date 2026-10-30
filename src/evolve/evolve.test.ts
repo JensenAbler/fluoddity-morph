@@ -731,3 +731,31 @@ test('breathe: a breath climbs at least a few seconds before it may top out', ()
   }
   assert.ok(frames * 0.05 > 16, `reached the next favorite after only ${frames * 0.05} s`);
 });
+
+test('breathe: rehome makes a liked state the new center and restarts the breath count', () => {
+  const ev = new Evolver(seeded(223));
+  ev.settings.motion = 'breathe';
+  ev.settings.breathSeconds = 10;
+  ev.settings.breathPeak = 3;
+  ev.settings.bigPeak = 10;
+  ev.settings.bigEvery = 2;
+  ev.settings.orbit = 0;
+  ev.setPool([{ name: 'other', project: project(2), likes: 1 }]);
+  assert.ok(ev.start(project(0)));
+  // Most of the way through breath 1: the next breath would be the big one.
+  for (let i = 0; i < 150; i++) ev.step(0.05);
+  const liked = ev.add('Liked 1', project(1), 1);
+  assert.ok(ev.rehome(liked));
+  let c = ev.step(0.05)!.configs[0]!;
+  assert.ok(Math.abs(c.rule[0]! - 1) < 1e-9, 'the liked state is the center');
+  assert.ok(c.mutationScale < 0.05, `breathing starts over from zero: ${c.mutationScale}`);
+  // Count reset: breath 1 after the like is ordinary (peaks near 3), not big.
+  let max = 0;
+  for (let i = 0; i < 190; i++) {
+    c = ev.step(0.05)!.configs[0]!;
+    max = Math.max(max, c.mutationScale);
+    assert.ok(Math.abs(c.rule[0]! - 1) < 1e-9, 'stays on the new center');
+  }
+  assert.ok(Math.abs(max - 3) < 0.1, `an ordinary breath, not a big one: ${max}`);
+  assert.equal(ev.view().focusName.length >= 0, true);
+});

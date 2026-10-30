@@ -330,8 +330,9 @@ export const DEFAULT_SETTINGS: EvolveSettings = {
   breathSeconds: 40,
   breathPeak: 0.5,
   bigPeak: 4,
-  bigEvery: 4,
-  orbit: 0,
+  // Jensen: long stays on one favorite, breaths swinging past it (Oct 29).
+  bigEvery: 20,
+  orbit: 0.4,
 };
 
 /**
@@ -952,6 +953,21 @@ export class Evolver {
 
   stop(): void {
     this.running = false;
+  }
+
+  /**
+   * MAKE `a` THE NEW CENTER, right where things are: the ♥ in Breathe mode.
+   * `a` is the liked state, baked (its mutation folded into its rule), so
+   * breathing restarts from zero on it with a fresh count -- the next big
+   * breath is a full `bigEvery` away. Starts over exactly as `start` does,
+   * except that home is the attractor itself rather than an anonymous start.
+   */
+  rehome(a: Attractor): boolean {
+    if (!this.start(a.project)) return false;
+    this.home = a;
+    this.hopping = false;
+    this.arrived();
+    return true;
   }
 
   /** Breathe mode's frame -- see `MotionMode`. */

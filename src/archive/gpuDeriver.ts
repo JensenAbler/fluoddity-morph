@@ -53,6 +53,9 @@ export interface DeriveRequest {
   readonly cohort: number;
   readonly mutationSeed: number;
   readonly mutationScale: number;
+  /** The evolver's runtime-only second voice (Orbit). Absent = none. */
+  readonly mutationScale2?: number;
+  readonly mutationSeed2?: number;
 }
 
 /** 320 bytes: 10 FourierCenters x (frequency vec4 + amplitude vec4). */
@@ -164,6 +167,8 @@ export async function createGpuDeriver(
       radialGravity: false,
       gravityTrails: 0,
       trailWeight: 1,
+      mutationScale2: request.mutationScale2 ?? 0,
+      mutationSeed2: request.mutationSeed2 ?? 0,
       rule: request.rule,
     };
   }
@@ -244,6 +249,8 @@ export function derivationKey(request: DeriveRequest): string {
     request.cohort,
     request.mutationSeed,
     request.mutationScale,
+    // Only when present, so every key made before the second voice is unchanged.
+    ...((request.mutationScale2 ?? 0) !== 0 ? [`v2:${request.mutationScale2}:${request.mutationSeed2 ?? 0}`] : []),
     request.rule.join(','),
   ].join('|');
 }

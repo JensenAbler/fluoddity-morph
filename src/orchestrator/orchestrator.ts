@@ -2126,7 +2126,7 @@ export class Orchestrator implements CommandBus {
       [0, 1, 2, 3, 44, 45, 46, 47].every((i) => rule[i] === 0);
     const needs = project.configs.some(
       (c) =>
-        (c.mutationScale !== 0 || generatedOnGpu(c.rule)) &&
+        (c.mutationScale !== 0 || (c.mutationScale2 ?? 0) !== 0 || generatedOnGpu(c.rule)) &&
         (single || c.cohorts <= 1),
     );
     if (!needs && !single) return project;
@@ -2138,7 +2138,7 @@ export class Orchestrator implements CommandBus {
       if (
         eligible &&
         deriver !== null &&
-        (c.mutationScale !== 0 || generatedOnGpu(c.rule))
+        (c.mutationScale !== 0 || (c.mutationScale2 ?? 0) !== 0 || generatedOnGpu(c.rule))
       ) {
         try {
           const rule = await withTimeout(
@@ -2147,11 +2147,13 @@ export class Orchestrator implements CommandBus {
               cohort: 0,
               mutationSeed: c.mutationSeed,
               mutationScale: c.mutationScale,
+              mutationScale2: c.mutationScale2 ?? 0,
+              mutationSeed2: c.mutationSeed2 ?? 0,
             }),
             DERIVER_TIMEOUT_MS,
             'reading back a rule',
           );
-          next = { ...c, rule: [...rule], mutationScale: 0 };
+          next = { ...c, rule: [...rule], mutationScale: 0, mutationScale2: 0, mutationSeed2: 0 };
         } catch (err: unknown) {
           // Give up on baking for the session rather than stall every caller.
           console.warn('Baking failed; continuing unbaked:', err);
@@ -3278,9 +3280,15 @@ export class Orchestrator implements CommandBus {
         const captured = this.project;
         const name = `Liked ${String(++this.likeSerial)}`;
         void this.bakeAttractor(captured).then((baked) => {
-          this.evolver.add(name, baked, 1);
+          const a = this.evolver.add(name, baked, 1);
           this.persistPool();
-          this.notify(`♥ added "${name}" to the attractors`);
+          // In Breathe mode the liked state becomes the NEW CENTER, and the
+          // breath count starts over (Jensen, Oct 29).
+          if (this.evolver.running && this.evolver.settings.motion === 'breathe' && this.evolver.rehome(a)) {
+            this.notify(`♥ "${name}" is the new center`);
+          } else {
+            this.notify(`♥ added "${name}" to the attractors`);
+          }
         });
         return;
       }
