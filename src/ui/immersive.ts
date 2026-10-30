@@ -23,7 +23,7 @@ const CLASS = 'fm-immersive';
 const IDLE_MS = 2500;
 
 const STYLE = `
-body.${CLASS} > *:not(canvas):not([data-immersive-exit]):not([data-immersive-marks]) { display: none !important; }
+body.${CLASS} > *:not(canvas):not([data-immersive-exit]):not([data-immersive-marks]):not([data-explore-map]) { display: none !important; }
 [data-immersive-exit] {
   position: fixed; z-index: 1000; display: none;
   right: calc(env(safe-area-inset-right, 0px) + 12px);

@@ -759,3 +759,33 @@ test('breathe: rehome makes a liked state the new center and restarts the breath
   assert.ok(Math.abs(max - 3) < 0.1, `an ordinary breath, not a big one: ${max}`);
   assert.equal(ev.view().focusName.length >= 0, true);
 });
+
+test('breathe map: distance from the center is the real mutation strength; a like adds a center on the path', () => {
+  const ev = new Evolver(seeded(227));
+  ev.settings.motion = 'breathe';
+  ev.settings.breathSeconds = 10;
+  ev.settings.breathPeak = 3;
+  ev.settings.orbit = 0;
+  ev.setPool([{ name: 'other', project: project(2), likes: 1 }]);
+  assert.ok(ev.start(project(0), 'origin'));
+  const m = ev.map;
+  assert.equal(m.centers.length, 1);
+  assert.equal(m.centers[0]!.name, 'origin');
+  let maxR = 0;
+  for (let i = 0; i < 450; i++) {
+    const c = ev.step(0.05)!.configs[0]!;
+    const r = Math.hypot(m.at!.x - m.centers[0]!.x, m.at!.y - m.centers[0]!.y);
+    assert.ok(Math.abs(r - c.mutationScale) < 1e-9, `orbit 0: radius is the mutation scale (${r} vs ${c.mutationScale})`);
+    maxR = Math.max(maxR, r);
+  }
+  assert.ok(Math.abs(maxR - 3) < 0.05, `reaches the breath peak: ${maxR}`);
+  assert.ok(m.trail.length > 100, 'the path is recorded');
+  // Two breaths, two different directions.
+  const at = { ...m.at! };
+  const liked = ev.add('Liked 1', project(1), 1);
+  assert.ok(ev.rehome(liked));
+  assert.equal(m.centers.length, 2, 'never pruned: the like adds a center');
+  assert.ok(Math.abs(m.centers[1]!.x - at.x) < 1e-9 && Math.abs(m.centers[1]!.y - at.y) < 1e-9, 'right where the path was');
+  assert.equal(m.centers[1]!.name, 'Liked 1');
+  assert.equal(m.breaks.length, 0, 'a like continues the path');
+});

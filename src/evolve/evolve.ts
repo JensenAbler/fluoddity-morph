@@ -330,8 +330,9 @@ export const DEFAULT_SETTINGS: EvolveSettings = {
   breathSeconds: 40,
   breathPeak: 0.5,
   bigPeak: 4,
-  // Jensen: long stays on one favorite, breaths swinging past it (Oct 29).
-  bigEvery: 20,
+  // BIG BREATHS ARE RETIRED (Jensen, Oct 29): a like is how a new center is
+  // chosen now. 0 = never; the mechanism is left dormant, off by default.
+  bigEvery: 0,
   orbit: 0.4,
 };
 
@@ -550,15 +551,44 @@ export interface EvolveView {
   readonly progress: readonly number[];
   readonly settings: Readonly<EvolveSettings>;
   readonly ready: boolean;
+  /** The exploration map (Breathe mode), by reference -- read it, never write it. */
+  readonly map: Readonly<ExploreMapData>;
+  /** Breath peak, the map's natural unit of distance. */
+  readonly mapPeak: number;
 }
 
 /**
  * The evolver. The Orchestrator owns one, feeds it the attractor pool, and
  * calls `step(dt)` each frame while running.
  */
+/**
+ * THE EXPLORATION MAP (Breathe mode). Every center breathed on is a dot; the
+ * live state's whole journey around each is a path. It only grows, for the
+ * session. Units are MUTATION STRENGTH: a point's distance from its center is
+ * the real mutation scale at that moment, exactly. Each roll (seed) is its own
+ * direction in the real space, roughly perpendicular to every other, which no
+ * flat picture can keep -- so each gets its own direction on screen instead,
+ * stepping round by the golden angle. While two breaths overlap (Orbit) the
+ * point is the sum of both, so the shape IS the orbit: spokes at 0, a curved
+ * star in between, chords at 1.
+ */
+export interface ExploreMapData {
+  readonly centers: { x: number; y: number; name: string }[];
+  /** Every place the live state has been, as flat x,y pairs. */
+  readonly trail: number[];
+  /** Point indices where the trail jumps: a fresh start rather than a like. */
+  readonly breaks: number[];
+  at: { x: number; y: number } | null;
+}
+
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+
 export class Evolver {
   private pool: Attractor[] = [];
   private nextKey = 1;
+  private readonly exploreMap: ExploreMapData = { centers: [], trail: [], breaks: [], at: null };
+  private rollCount = 0;
+  private rehoming = false;
   private genes: GeneState[] = [];
   private base: Project | null = null;
   private focus: Attractor | null = null;
@@ -638,7 +668,9 @@ export class Evolver {
      * rises -- its own seed, phase and peak. Rendered as the second mutation
      * voice (`mutationScale2`/`mutationSeed2`). Null when nothing overlaps.
      */
-    prev: null as { seed: number; t: number; peak: number } | null,
+    prev: null as { seed: number; t: number; peak: number; angle: number } | null,
+    /** Map: the on-screen direction of this breath's roll. */
+    angle: 0,
   };
 
   /**
@@ -880,7 +912,7 @@ export class Evolver {
   }
 
   /** Start from `project` (or a favorite) and begin drifting. */
-  start(from: Project | null): boolean {
+  start(from: Project | null, name?: string): boolean {
     if (this.pool.length === 0) return false;
     const origin = from ?? this.pick()!.project;
     this.base = origin;
@@ -905,6 +937,7 @@ export class Evolver {
         colorInT: 0,
         descentPeak: null,
         prev: null,
+        angle: this.nextAngle(),
       };
     }
     {
@@ -920,6 +953,7 @@ export class Evolver {
     this.nextFocus();
     this.newLine(this.ruleSpread());
     this.leg = null;
+    if (this.settings.motion === 'breathe') this.placeCenter(name ?? origin.name);
     this.running = true;
     return true;
   }
@@ -963,11 +997,70 @@ export class Evolver {
    * except that home is the attractor itself rather than an anonymous start.
    */
   rehome(a: Attractor): boolean {
-    if (!this.start(a.project)) return false;
+    this.rehoming = true;
+    const ok = this.start(a.project, a.name);
+    this.rehoming = false;
+    if (!ok) return false;
     this.home = a;
     this.hopping = false;
     this.arrived();
     return true;
+  }
+
+  /** The exploration map, by reference. */
+  get map(): Readonly<ExploreMapData> {
+    return this.exploreMap;
+  }
+
+  private nextAngle(): number {
+    return this.rollCount++ * GOLDEN_ANGLE;
+  }
+
+  /**
+   * A new center on the map. A like (rehome) puts it exactly where the live
+   * state is on the path -- the liked state IS that point. A fresh start sits
+   * clear of everything so far, and the trail breaks to it.
+   */
+  private placeCenter(name: string): void {
+    const m = this.exploreMap;
+    let x = 0;
+    const y = 0;
+    if (this.rehoming && m.at !== null) {
+      m.centers.push({ x: m.at.x, y: m.at.y, name });
+      m.trail.push(m.at.x, m.at.y);
+      return;
+    }
+    if (m.centers.length > 0) {
+      let maxX = -Infinity;
+      for (const c of m.centers) maxX = Math.max(maxX, c.x);
+      for (let i = 0; i < m.trail.length; i += 2) maxX = Math.max(maxX, m.trail[i]!);
+      x = maxX + 3 * Math.max(0.5, this.settings.breathPeak);
+      m.breaks.push(m.trail.length / 2);
+    }
+    m.centers.push({ x, y, name });
+    m.trail.push(x, y);
+    m.at = { x, y };
+  }
+
+  /** Where the live state is on the map now: see `ExploreMapData`. */
+  private recordMap(): void {
+    const m = this.exploreMap;
+    const c = m.centers[m.centers.length - 1];
+    if (c === undefined) return;
+    const b = this.breath;
+    const a = this.genes[MUTATION_GENE]?.x[0] ?? 0;
+    let x = c.x + a * Math.cos(b.angle);
+    let y = c.y + a * Math.sin(b.angle);
+    if (b.prev !== null) {
+      const s = Math.max(0, b.prev.peak * Math.sin(Math.PI * b.prev.t) ** 2);
+      x += s * Math.cos(b.prev.angle);
+      y += s * Math.sin(b.prev.angle);
+    }
+    const t = m.trail;
+    const n = t.length;
+    const step = Math.max(1e-3, this.settings.breathPeak * 0.01);
+    if (n < 2 || Math.hypot(x - t[n - 2]!, y - t[n - 1]!) >= step) t.push(x, y);
+    m.at = { x, y };
   }
 
   /** Breathe mode's frame -- see `MotionMode`. */
@@ -1049,10 +1142,11 @@ export class Evolver {
         b.t >= 1 - orbit / 2 &&
         b.t < 1
       ) {
-        b.prev = { seed: b.seed, t: b.t, peak };
+        b.prev = { seed: b.seed, t: b.t, peak, angle: b.angle };
         b.t = 0;
         b.count += 1;
         b.seed = 1e-3 + this.rng() * 0.998;
+        b.angle = this.nextAngle();
         b.descentPeak = null;
       }
     }
@@ -1065,6 +1159,7 @@ export class Evolver {
       // The Nth breath is the big one: after N-1 zeros.
       b.big = s.bigEvery > 0 && (b.count + 1) % Math.round(s.bigEvery) === 0;
       b.seed = 1e-3 + this.rng() * 0.998;
+      b.angle = this.nextAngle();
       b.legacy = false;
       b.descentPeak = null;
       if (b.next !== null) {
@@ -1108,6 +1203,7 @@ export class Evolver {
     this.boundary = descent !== null ? BC.RESET : this.home.project.world.boundaryConditions;
     this.pair = { a: this.home, b: b.next ?? this.home };
     this.w = b.t;
+    this.recordMap();
     return this.current();
   }
 
@@ -1460,6 +1556,8 @@ export class Evolver {
   view(): EvolveView {
     return {
       running: this.running,
+      map: this.exploreMap,
+      mapPeak: this.settings.breathPeak,
       temperature: this.temperature.relative,
       cold: this.temperature.cold,
       ready: this.ready,

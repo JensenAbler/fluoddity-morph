@@ -65,6 +65,7 @@ import { showsSlider } from './gatedControl.ts';
 import { MenuBar } from './menuBar.ts';
 import { MorphPanel } from './morphPanel.ts';
 import { Immersive } from './immersive.ts';
+import { ExploreMap } from './exploreMap.ts';
 import { MutationOverlay } from './mutationOverlay.ts';
 // The two button constants, so `touchDragButton` names them rather than
 // returning a bare 0 or 2 that the caller has to decode.
@@ -489,6 +490,8 @@ export class Panel {
   private readonly morphPanel: MorphPanel;
   /** Full screen with every piece of UI hidden. See `immersive.ts`. */
   private readonly immersive = new Immersive();
+  /** The exploration map HUD (Breathe mode). See `exploreMap.ts`. */
+  private readonly exploreMap = new ExploreMap();
 
   /**
    * The frame-rate button, top-right.
@@ -1247,6 +1250,8 @@ export class Panel {
     // Above the hidden check too: the timeline is meant to stay up while the
     // side panels are out of the way.
     this.morphPanel.refresh(status);
+    // The map is a HUD: above the hidden check, and shown in immersive mode too.
+    this.exploreMap.refresh(status.evolve);
     // ALSO before the hidden check, and for the same reason as the menu bar:
     // `X` does not hide the overlay, so it is still on screen and still has to
     // track the tool and the mutation value. Below the early return it froze

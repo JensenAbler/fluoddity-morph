@@ -56,8 +56,6 @@ const SPEED_SLIDERS: readonly SliderSpec[] = [
 const LEASH_SLIDERS: readonly SliderSpec[] = [
   { key: 'breathSeconds', label: 'breath', min: 10, max: 180, step: 5, unit: 's', title: 'Breathe mode: seconds for one breath of mutation out and back' },
   { key: 'breathPeak', label: 'breath peak', min: 0.5, max: 6, step: 0.25, title: 'Breathe mode: how far an ordinary breath takes the mutation' },
-  { key: 'bigPeak', label: 'big peak', min: 2, max: 20, step: 0.5, title: 'Breathe mode: how far a big breath takes it, at the top of which it hops to another favorite' },
-  { key: 'bigEvery', label: 'big every', min: 0, max: 40, step: 1, title: 'Breathe mode: every how many breaths is a big one that hops (0 = stay on this favorite)' },
   { key: 'orbit', label: 'orbit', min: 0, max: 1, step: 0.05, title: 'Breathe mode: 0 = every breath comes back exactly to the favorite. Higher = the next breath starts before the last one ends, so the way from one mutation to the next swings past the favorite (1 = straight across, mutation to mutation)' },
   { key: 'coherence', label: 'coherence', min: 0, max: 1, step: 0.05, title: 'High: genes mostly orbit the focus favorite (whole creatures). Low: genes from different favorites recombine' },
   { key: 'ruleWander', label: 'rule wander', min: 0, max: 0.8, step: 0.01, title: 'Random jitter on top of exploration, in units of your favorites own spread' },
