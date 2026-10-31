@@ -789,3 +789,46 @@ test('breathe map: distance from the center is the real mutation strength; a lik
   assert.equal(m.centers[1]!.name, 'Liked 1');
   assert.equal(m.breaks.length, 0, 'a like continues the path');
 });
+
+test('breathe: a colour collapse below the floor turns the breath back, unless the favorite began below it', () => {
+  // Only the FIRST breath: the next sets out already collapsed, so it is not judged on colour.
+  const run = (startSpread: number, steps: number) => {
+    const ev = new Evolver(seeded(229));
+    ev.settings.motion = 'breathe';
+    ev.settings.breathSeconds = 20;
+    ev.settings.breathPeak = 3;
+    ev.settings.orbit = 0;
+    ev.settings.colorFloor = 0.08;
+    ev.setPool([{ name: 'other', project: project(2), likes: 1 }]);
+    assert.ok(ev.start(project(0)));
+    let max = 0;
+    for (let i = 0; i < steps; i++) {
+      // As the Orchestrator does, every frame: halfway up the climb the colours collapse.
+      ev.setTemperature({ relative: 1, cold: false, coldFor: 0, colorSpread: i < 60 ? startSpread : 0.03 });
+      max = Math.max(max, ev.step(0.05)!.configs[0]!.mutationScale);
+    }
+    return max;
+  };
+  const a = run(0.6, 150);
+  const b = run(0.05, 210);
+  assert.ok(a < 2.5, `collapse turns the breath back before the peak: ${a}`);
+  assert.ok(b > 2.9, `a one-colour favorite is judged on stillness alone: ${b}`);
+});
+
+test('breathe map: clearMap wipes it; still breathing, the current favorite is the first dot again', () => {
+  const ev = new Evolver(seeded(233));
+  ev.settings.motion = 'breathe';
+  ev.settings.breathSeconds = 10;
+  ev.setPool([{ name: 'other', project: project(2), likes: 1 }]);
+  assert.ok(ev.start(project(0), 'origin'));
+  for (let i = 0; i < 100; i++) ev.step(0.05);
+  assert.ok(ev.add('Liked', project(1), 1) && ev.map.trail.length > 10);
+  ev.clearMap();
+  assert.equal(ev.map.centers.length, 1);
+  assert.deepEqual([ev.map.centers[0]!.x, ev.map.centers[0]!.y], [0, 0]);
+  assert.equal(ev.map.trail.length, 2);
+  ev.stop();
+  ev.clearMap();
+  assert.equal(ev.map.centers.length, 0, 'stopped: simply empty');
+  assert.equal(ev.map.trail.length, 0);
+});

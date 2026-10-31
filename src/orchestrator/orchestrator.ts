@@ -928,7 +928,10 @@ export class Orchestrator implements CommandBus {
         this.seenArrivals = this.evolver.arrivals;
         this.temperatureProbe.freshStart();
       }
-      if (this.temperatureProbe !== null) this.evolver.setTemperature(this.temperatureProbe.value);
+      if (this.temperatureProbe !== null) {
+        this.temperatureProbe.setHueScale(this.project.configs[0]?.colorSensitivity ?? 1);
+        this.evolver.setTemperature(this.temperatureProbe.value);
+      }
       const next = this.evolver.step(dt);
       if (next !== null) this.setProject(next);
     }
@@ -2902,11 +2905,14 @@ export class Orchestrator implements CommandBus {
         }
         this.presetIndex = index;
         this.adoptPreset(command.name);
+        this.evolver.clearMap();
         return;
       }
 
       case 'loadConfig':
         this.loadConfig(command.category, command.name);
+        // A save loaded from the menu starts a fresh exploration map.
+        this.evolver.clearMap();
         return;
 
       case 'previewConfig':

@@ -33,6 +33,14 @@ export interface Temperature {
   readonly cold: boolean;
   /** Seconds the run has been continuously cold (0 when warm). */
   readonly coldFor: number;
+  /**
+   * COLOUR SPREAD, 0..1: how many different colours the particles show right
+   * now. 0 = every particle the same hue, 1 = hues evenly round the wheel.
+   * Colour here is the rule's own output signal, which particles lay into the
+   * trails and sense -- so when it collapses to one hue they can no longer tell
+   * each other apart, and stillness follows (Jensen, Oct 30). Absent = unknown.
+   */
+  readonly colorSpread?: number;
 }
 
 export class TemperatureProbe {
@@ -46,6 +54,8 @@ export class TemperatureProbe {
   private coldSince: number | null = null;
   private latest: Temperature = { speed: 0, relative: 1, cold: false, coldFor: 0 };
   private failed = false;
+  /** `colorSensitivity` of what is shown: hue = scale * signal (+ an offset that cancels). */
+  private hueScale = 1;
 
   constructor(device: GPUDevice) {
     this.device = device;
@@ -53,6 +63,11 @@ export class TemperatureProbe {
 
   get value(): Temperature {
     return this.latest;
+  }
+
+  /** The shown config's `colorSensitivity`, so the spread measures the colours you SEE. */
+  setHueScale(scale: number): void {
+    if (Number.isFinite(scale)) this.hueScale = scale;
   }
 
   /**
@@ -63,7 +78,7 @@ export class TemperatureProbe {
   freshStart(): void {
     this.peak = 0;
     this.coldSince = null;
-    this.latest = { speed: this.latest.speed, relative: 1, cold: false, coldFor: 0 };
+    this.latest = { ...this.latest, relative: 1, cold: false, coldFor: 0 };
   }
 
   /** Called while the frame's encoder is open: queue the copy if one is due. */
@@ -111,16 +126,29 @@ export class TemperatureProbe {
 
   private fold(f: Float32Array, nowMs: number): void {
     // Entity layout: pos_vel = (pos.x, pos.y, vel.x, vel.y), then misc.
+    // misc.z (lane 6) is col_params.x, the rule's colour signal; the renderer's
+    // hue is colorSensitivity * signal + colorOffset, in turns.
     let sum = 0;
     let n = 0;
+    let cs = 0;
+    let sn = 0;
+    let nc = 0;
+    const turn = 2 * Math.PI * this.hueScale;
     for (let i = 0; i + 3 < f.length; i += 8) {
       const vx = f[i + 2]!;
       const vy = f[i + 3]!;
       if (!Number.isFinite(vx) || !Number.isFinite(vy)) continue;
       sum += Math.hypot(vx, vy);
       n++;
+      const c = f[i + 6];
+      if (c !== undefined && Number.isFinite(c)) {
+        cs += Math.cos(turn * c);
+        sn += Math.sin(turn * c);
+        nc++;
+      }
     }
     if (n === 0) return;
+    const colorSpread = nc > 0 ? colorSpreadOf(cs / nc, sn / nc) : 1;
     const speed = sum / n;
     const dt = Math.max(0, (nowMs - this.lastPeakTime) / 1000);
     this.lastPeakTime = nowMs;
@@ -134,6 +162,12 @@ export class TemperatureProbe {
       relative,
       cold,
       coldFor: this.coldSince === null ? 0 : (nowMs - this.coldSince) / 1000,
+      colorSpread,
     };
   }
+}
+
+/** 1 - |mean unit hue vector|: 0 when every hue agrees, 1 when they cancel out. */
+export function colorSpreadOf(meanCos: number, meanSin: number): number {
+  return Math.max(0, Math.min(1, 1 - Math.hypot(meanCos, meanSin)));
 }

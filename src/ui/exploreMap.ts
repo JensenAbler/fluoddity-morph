@@ -3,12 +3,14 @@
  * own record (`ExploreMapData`): a dot for every center, the live state's
  * whole path around each, and where it is now. Never pruned in a session.
  *
- * A corner card, kept on screen in immersive mode too. Tap to enlarge/shrink.
+ * A corner card, shown in full screen (immersive) only. Tap to enlarge/shrink.
  * Redrawn at most ~15 times a second, and only when something moved.
  */
 
 import type { EvolveView } from '../evolve/evolve.ts';
 
+/** The body class Immersive sets in full screen (see `immersive.ts`). */
+const IMMERSIVE_CLASS = 'fm-immersive';
 const SMALL = 170;
 const LARGE = 340;
 const FRAME_MS = 66;
@@ -44,7 +46,9 @@ export class ExploreMap {
   refresh(ev: EvolveView): void {
     if (this.box === null || this.canvas === null) return;
     const m = ev.map;
-    const show = ev.settings.motion === 'breathe' && m.centers.length > 0;
+    // FULL SCREEN ONLY (Jensen, Oct 30): it crowds the regular UI.
+    const show =
+      document.body.classList.contains(IMMERSIVE_CLASS) && ev.settings.motion === 'breathe' && m.centers.length > 0;
     this.box.style.display = show ? 'block' : 'none';
     if (!show) return;
     const now = performance.now();

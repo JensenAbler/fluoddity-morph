@@ -300,6 +300,12 @@ export interface EvolveSettings {
    */
   orbit: number;
   /**
+   * Breathe mode: turn a breath back as soon as the colours collapse below
+   * this spread (0..1, see `Temperature.colorSpread`) -- one hue comes before
+   * stillness. 0 = off. Not applied on a favorite that is one colour anyway.
+   */
+  colorFloor: number;
+  /**
    * Seconds for colors to settle on a new favorite's palette. Color follows
    * the FOCUS favorite on this slow clock, not the moving line -- the log had
    * "worn out from how fast and often the color changes".
@@ -334,6 +340,8 @@ export const DEFAULT_SETTINGS: EvolveSettings = {
   // chosen now. 0 = never; the mechanism is left dormant, off by default.
   bigEvery: 0,
   orbit: 0.4,
+  // Jensen's pick (Oct 30); prune more rather than less.
+  colorFloor: 0.08,
 };
 
 /**
@@ -669,6 +677,8 @@ export class Evolver {
      * voice (`mutationScale2`/`mutationSeed2`). Null when nothing overlaps.
      */
     prev: null as { seed: number; t: number; peak: number; angle: number } | null,
+    /** Colour spread when this breath set out; the colour floor only bites if it began above it. */
+    startSpread: -1,
     /** Map: the on-screen direction of this breath's roll. */
     angle: 0,
   };
@@ -682,7 +692,7 @@ export class Evolver {
   }
   private lastSpread: number[] = [];
   /** Measured motion, from the Orchestrator's temperature probe. */
-  private temperature = { relative: 1, cold: false, coldFor: 0 };
+  private temperature = { relative: 1, cold: false, coldFor: 0, colorSpread: 1 };
   private arrivalCount = 0;
 
   /**
@@ -698,7 +708,7 @@ export class Evolver {
   private arrived(): void {
     this.arrivalCount += 1;
     // Warm until the sensor's fresh reading arrives.
-    this.temperature = { relative: 1, cold: false, coldFor: 0 };
+    this.temperature = { relative: 1, cold: false, coldFor: 0, colorSpread: 1 };
   }
   /** Whether this cold spell has already turned the drift around / abandoned the line. */
   private turnedThisSpell = false;
@@ -852,8 +862,8 @@ export class Evolver {
   }
 
   /** Feed in the latest measured temperature (see `telemetry/temperature.ts`). */
-  setTemperature(t: { relative: number; cold: boolean; coldFor: number }): void {
-    this.temperature = { relative: t.relative, cold: t.cold, coldFor: t.coldFor };
+  setTemperature(t: { relative: number; cold: boolean; coldFor: number; colorSpread?: number }): void {
+    this.temperature = { relative: t.relative, cold: t.cold, coldFor: t.coldFor, colorSpread: t.colorSpread ?? 1 };
     if (!t.cold) {
       this.turnedThisSpell = false;
       this.abandonedThisSpell = false;
@@ -938,6 +948,7 @@ export class Evolver {
         descentPeak: null,
         prev: null,
         angle: this.nextAngle(),
+        startSpread: -1,
       };
     }
     {
@@ -1012,6 +1023,19 @@ export class Evolver {
     return this.exploreMap;
   }
 
+  /**
+   * Wipe the exploration map: a save loaded from the menu starts a new map
+   * (Jensen, Oct 30). If still breathing, the current favorite is its first dot.
+   */
+  clearMap(): void {
+    const m = this.exploreMap;
+    m.centers.length = 0;
+    m.trail.length = 0;
+    m.breaks.length = 0;
+    m.at = null;
+    if (this.running && this.settings.motion === 'breathe') this.placeCenter(this.home?.name ?? 'start');
+  }
+
   private nextAngle(): number {
     return this.rollCount++ * GOLDEN_ANGLE;
   }
@@ -1076,6 +1100,9 @@ export class Evolver {
       if (b.prev.t >= 1) b.prev = null;
     }
 
+    // The colour spread as this breath sets out (the first reading it sees).
+    if (b.startSpread < 0) b.startSpread = this.temperature.colorSpread;
+
     // TOP OUT EARLY. If the particles go still on the way up, this breath has
     // gone as far as it should: turn around now and breathe down as if from
     // the top. An ordinary breath mirrors its phase (the same curve, back down
@@ -1084,8 +1111,9 @@ export class Evolver {
     if (
       b.t < 0.5 &&
       b.t * Math.max(5, s.breathSeconds) * (b.big ? BIG_BREATH_STRETCH : 1) >= BREATH_MIN_CLIMB_SECONDS &&
-      this.temperature.cold &&
-      this.temperature.coldFor >= BREATH_TOPOUT_COLD_SECONDS
+      ((this.temperature.cold && this.temperature.coldFor >= BREATH_TOPOUT_COLD_SECONDS) ||
+        // COLOUR COLLAPSE: one hue comes before stillness, so turn back on it.
+        (s.colorFloor > 0 && b.startSpread >= s.colorFloor && this.temperature.colorSpread < s.colorFloor))
     ) {
       if (b.big) {
         b.descentPeak = this.genes[MUTATION_GENE]!.x[0] ?? peak;
@@ -1147,6 +1175,7 @@ export class Evolver {
         b.count += 1;
         b.seed = 1e-3 + this.rng() * 0.998;
         b.angle = this.nextAngle();
+        b.startSpread = -1;
         b.descentPeak = null;
       }
     }
@@ -1160,6 +1189,7 @@ export class Evolver {
       b.big = s.bigEvery > 0 && (b.count + 1) % Math.round(s.bigEvery) === 0;
       b.seed = 1e-3 + this.rng() * 0.998;
       b.angle = this.nextAngle();
+      b.startSpread = -1;
       b.legacy = false;
       b.descentPeak = null;
       if (b.next !== null) {
