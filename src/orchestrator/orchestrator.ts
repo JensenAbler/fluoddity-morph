@@ -162,6 +162,7 @@ import { MorphTimeline, startOf } from '../morph/morph.ts';
 import { Evolver } from '../evolve/evolve.ts';
 import { Telemetry, r4 } from '../telemetry/telemetry.ts';
 import { TemperatureProbe } from '../telemetry/temperature.ts';
+import { UiUsage } from '../telemetry/uiUsage.ts';
 import { HOME_CATEGORY, SEED_LIKES } from '../evolve/seedPool.ts';
 import { clearPool, loadPool, savePool } from '../evolve/poolStore.ts';
 import { type GpuDeriver, createGpuDeriver } from '../archive/gpuDeriver.ts';
@@ -396,6 +397,15 @@ export class Orchestrator implements CommandBus {
 
   /** Samples and 👍/👎 marks to the server log. See `telemetry/telemetry.ts`. */
   private readonly telemetry = new Telemetry();
+
+  /**
+   * Which controls get used, to the same log. Gathering only -- see
+   * `telemetry/uiUsage.ts`. Declared after `telemetry`, which it needs.
+   */
+  private readonly usage = UiUsage.start(this.telemetry);
+
+  /** >0 while `dispatch` is running, so re-entrant dispatches are not logged as uses. */
+  private dispatchDepth = 0;
 
   /** Measured particle motion ("0 kelvin" detector). Built on first frame. */
   private temperatureProbe: TemperatureProbe | null = null;
@@ -2638,6 +2648,19 @@ export class Orchestrator implements CommandBus {
    * type.
    */
   dispatch(command: Command): void {
+    // Log the use (outermost dispatch only: a command that routes through
+    // another, like `stepHighlightedCohort`, is one use, not two).
+    if (this.dispatchDepth === 0) this.usage.command(command);
+    this.dispatchDepth += 1;
+    try {
+      this.route(command);
+    } finally {
+      this.dispatchDepth -= 1;
+    }
+  }
+
+  /** The body of `dispatch`: one arm per command. */
+  private route(command: Command): void {
     // A DELIBERATE HAND ON THE PROJECT STOPS THE AUTOMATION. Evolve and the
     // morph timeline write the project every frame, so without this a preset
     // load, an undo or a slider drag lands for one frame and is then painted

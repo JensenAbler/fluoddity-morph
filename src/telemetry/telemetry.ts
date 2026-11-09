@@ -40,8 +40,29 @@ function newSessionId(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+/**
+ * A per-browser id kept in localStorage, so a later reader can tell one
+ * device's sessions from another's (Jensen's phone from a visitor's) without
+ * anything identifying. Undefined where storage is unavailable.
+ */
+function deviceId(): string | undefined {
+  try {
+    const key = 'fm-device';
+    let id = localStorage.getItem(key);
+    if (id === null || id === '') {
+      id = newSessionId();
+      localStorage.setItem(key, id);
+    }
+    return id;
+  } catch {
+    return undefined;
+  }
+}
+
 export class Telemetry {
   readonly sessionId = newSessionId();
+  /** Run just before the page-hide flush (UI usage closes open bursts here). */
+  private readonly hideHooks: Array<() => void> = [];
   private queue: object[] = [];
   private lastSample = -Infinity;
   private lastFlush = 0;
@@ -51,12 +72,28 @@ export class Telemetry {
   constructor() {
     this.enabled = typeof window !== 'undefined' && typeof fetch === 'function';
     if (!this.enabled) return;
+    const hide = (): void => {
+      for (const hook of this.hideHooks) {
+        try {
+          hook();
+        } catch {
+          /* never in the app's way */
+        }
+      }
+      this.flush(true);
+    };
     const onHide = (): void => {
-      if (document.visibilityState === 'hidden') this.flush(true);
+      if (document.visibilityState === 'hidden') hide();
     };
     document.addEventListener('visibilitychange', onHide);
-    window.addEventListener('pagehide', () => this.flush(true));
-    this.push({ type: 'session', ua: navigator.userAgent, screen: `${screen.width}x${screen.height}` });
+    window.addEventListener('pagehide', hide);
+    const device = deviceId();
+    this.push({
+      type: 'session',
+      ua: navigator.userAgent,
+      screen: `${screen.width}x${screen.height}`,
+      ...(device !== undefined ? { device } : {}),
+    });
   }
 
   private push(event: object): void {
@@ -88,6 +125,16 @@ export class Telemetry {
   /** Something worth a line in the log that is not a sample (start, stop...). */
   event(name: string, detail: object = {}): void {
     this.push({ type: 'event', name, ...detail });
+  }
+
+  /** A UI usage record (see `uiUsage.ts`). Goes out with the next batch. */
+  ui(record: object): void {
+    this.push({ type: 'ui', ...record });
+  }
+
+  /** Register something to run just before the page-hide flush. */
+  onHide(hook: () => void): void {
+    this.hideHooks.push(hook);
   }
 
   private flush(beacon: boolean): void {
