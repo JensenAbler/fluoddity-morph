@@ -59,6 +59,9 @@ export class WebcamField {
   private current = 0;
   /** Whether `scalars[current]` holds a frame of the running stream. */
   private primed = false;
+  /** Where each frame is drawn upright before upload. See `upright`. */
+  private uprightCanvas: HTMLCanvasElement | null = null;
+  private uprightContext: CanvasRenderingContext2D | null = null;
   /** Between the two blur passes. */
   private readonly blurTemp: GPUTexture;
   private readonly blurred: GPUTexture;
@@ -171,9 +174,10 @@ export class WebcamField {
   ): boolean {
     if (this.ingestPipeline === null) return false;
     const image = this.ensureImage(videoSize);
+    const source = this.upright(video, videoSize);
     try {
       this.device.queue.copyExternalImageToTexture(
-        { source: video },
+        { source },
         { texture: image },
         { width: videoSize[0], height: videoSize[1] },
       );
@@ -204,6 +208,41 @@ export class WebcamField {
 
     this.remap(encoder, worldAspect, settings);
     return true;
+  }
+
+  /**
+   * The camera frame the right way up, by way of a 2D canvas.
+   *
+   * ON AN IPHONE THE FIELD CAME OUT SIDEWAYS (floor on the left, Nov 2026).
+   * A phone camera's frames are stored in the sensor's own landscape layout
+   * plus a rotation tag; the <video> element applies the tag, and so does a 2D
+   * canvas `drawImage`, but WebKit's WebGPU `copyExternalImageToTexture` from
+   * a video copies the raw, unrotated frame. Drawing through a canvas first
+   * gets the upright picture everywhere, at the price of one extra copy of a
+   * small frame (640x480) per camera frame. Falls back to the video itself if
+   * no 2D context can be had.
+   */
+  private upright(
+    video: HTMLVideoElement,
+    size: readonly [number, number],
+  ): HTMLVideoElement | HTMLCanvasElement {
+    if (this.uprightCanvas === null) {
+      this.uprightCanvas = document.createElement('canvas');
+      this.uprightContext = this.uprightCanvas.getContext('2d', { alpha: false });
+    }
+    const canvas = this.uprightCanvas;
+    const ctx = this.uprightContext;
+    if (ctx === null) return video;
+    if (canvas.width !== size[0] || canvas.height !== size[1]) {
+      canvas.width = size[0];
+      canvas.height = size[1];
+    }
+    try {
+      ctx.drawImage(video, 0, 0, size[0], size[1]);
+    } catch {
+      return video;
+    }
+    return canvas;
   }
 
   /**
