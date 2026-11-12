@@ -37,7 +37,7 @@
  * produced Edges (along), to within a blur. A saved setup naming either is
  * carried to its twin (`LEGACY_MAPPINGS`) rather than reset.
  */
-export const CAMERA_MAPPINGS = ['edgesAcross', 'edgesAlong', 'motion'] as const;
+export const CAMERA_MAPPINGS = ['edgesAcross', 'edgesAlong', 'motion', 'motionGravity'] as const;
 export type CameraMapping = (typeof CAMERA_MAPPINGS)[number];
 
 /** Removed mappings, and the one each behaved identically to. */
@@ -50,6 +50,7 @@ export const CAMERA_MAPPING_LABELS: Record<CameraMapping, string> = {
   edgesAcross: 'Edges (across)',
   edgesAlong: 'Edges (along)',
   motion: 'Motion',
+  motionGravity: 'Motion gravity',
 };
 
 export const CAMERA_MAPPING_HELP: Record<CameraMapping, string> = {
@@ -63,6 +64,10 @@ export const CAMERA_MAPPING_HELP: Record<CameraMapping, string> = {
   motion:
     'Points toward whatever is moving, so a still scene does nothing and a ' +
     'waved hand draws particles in (or scatters them, with Direction set to Away).',
+  motionGravity:
+    'Moving areas act like mass and pull on particles across the whole screen, ' +
+    'harder the closer they are and the more is moving. Falloff sets how fast ' +
+    'the pull weakens with distance.',
 };
 
 /** Which channel of the existing field machinery the camera feeds. */
@@ -106,6 +111,12 @@ export interface WebcamSettings {
   readonly gain: number;
   /** 0..1: how much the picture is smoothed before it is read. */
   readonly blur: number;
+  /**
+   * Motion gravity only: 0..MAX_CAMERA_FALLOFF, the exponent of distance in
+   * the pull. 0 pulls as hard from across the screen as from up close; higher
+   * keeps the pull near the motion. See cameraGravity.wgsl.
+   */
+  readonly falloff: number;
   /** Flips every mapping's vector: toward bright/edges/motion, or away. */
   readonly direction: CameraDirection;
   readonly facing: CameraFacing;
@@ -125,12 +136,14 @@ export interface WebcamSettings {
 }
 
 export const MAX_CAMERA_GAIN = 8;
+export const MAX_CAMERA_FALLOFF = 3;
 
 export const DEFAULT_WEBCAM_SETTINGS: WebcamSettings = Object.freeze({
   mapping: 'edgesAlong',
   destination: 'trails',
   gain: 1,
   blur: 0.3,
+  falloff: 1,
   direction: 'toward',
   facing: 'user',
   mirror: true,
@@ -284,6 +297,7 @@ export function sanitizeWebcamSettings(record: Record<string, unknown>): WebcamS
     destination: pick('destination', CAMERA_DESTINATIONS, d.destination),
     gain: num('gain', 0, MAX_CAMERA_GAIN, d.gain),
     blur: num('blur', 0, 1, d.blur),
+    falloff: num('falloff', 0, MAX_CAMERA_FALLOFF, d.falloff),
     direction: pick('direction', CAMERA_DIRECTIONS, d.direction),
     facing,
     // A missing mirror follows the facing it is paired with, not the default

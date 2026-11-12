@@ -41,6 +41,7 @@ const FILES = [
   'cameraIngest.wgsl',
   'cameraBlur.wgsl',
   'cameraMap.wgsl',
+  'cameraGravity.wgsl',
   'cameraPreview.wgsl',
 ];
 
@@ -57,7 +58,7 @@ test('ingest flips the camera picture vertically exactly once', () => {
 });
 
 test('no other camera pass flips v', () => {
-  for (const name of ['cameraBlur.wgsl', 'cameraMap.wgsl', 'cameraPreview.wgsl']) {
+  for (const name of ['cameraBlur.wgsl', 'cameraMap.wgsl', 'cameraGravity.wgsl', 'cameraPreview.wgsl']) {
     assert.doesNotMatch(own(name), /1\.0\s*-\s*[a-z_]*\.y\b/, name);
   }
 });
@@ -65,7 +66,7 @@ test('no other camera pass flips v', () => {
 test('the passes that feed the particles index by position, not by the quad’s uv', () => {
   // `in.uv` is v-up on the SCREEN; texels by `in.clip` are v-up in the field.
   // Mixing the two in a pass that renders into a texture is the flip again.
-  for (const name of ['cameraIngest.wgsl', 'cameraBlur.wgsl', 'cameraMap.wgsl']) {
+  for (const name of ['cameraIngest.wgsl', 'cameraBlur.wgsl', 'cameraMap.wgsl', 'cameraGravity.wgsl']) {
     const body = own(name);
     assert.doesNotMatch(body, /in\.uv/, name);
     assert.match(body, /in\.clip\.xy/, name);

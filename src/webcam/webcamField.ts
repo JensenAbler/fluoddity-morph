@@ -8,7 +8,13 @@
  *   blur y  ...          -> blurred                 } again on a settings change
  *   map     blurred      -> the vector field        }
  *
- * and a fifth, `renderPreview`, that colours the result into the Camera tab's
+ * plus, only while the mapping is Motion gravity, two small passes between
+ * blur and map (see cameraGravity.wgsl):
+ *
+ *   mass     blurred      -> motion mass, 32^2
+ *   gravity  mass         -> long-range pull, 32^2  -- which map then reads
+ *
+ * and a further one, `renderPreview`, that colours the result into the Camera tab's
  * thumbnail. `entityUpdate.wgsl` samples `view` through `get_camera`.
  *
  * ## Nothing accumulates, by construction
@@ -33,6 +39,7 @@ import { compileModule } from '../gpu/shaderModule.ts';
 import ingestSource from './shaders/cameraIngest.wgsl';
 import blurSource from './shaders/cameraBlur.wgsl';
 import mapSource from './shaders/cameraMap.wgsl';
+import gravitySource from './shaders/cameraGravity.wgsl';
 import previewSource from './shaders/cameraPreview.wgsl';
 import { CAMERA_FIELD_DIM, blurStep, coverScale, stencilRadius } from './fieldMath.ts';
 import { type WebcamSettings, blurTexels, mappingIndex } from './webcamSettings.ts';
@@ -46,6 +53,13 @@ export const CAMERA_FIELD_FORMAT: GPUTextureFormat = 'rg16float';
 
 /** One vec4 per pass. */
 const UNIFORM_SIZE = 16;
+
+/**
+ * Side of Motion gravity's coarse grids. Must match `GRAVITY_DIM` in
+ * cameraGravity.wgsl. 32 makes the all-pairs sum 1024 x 1024 per camera frame:
+ * cheap on any GPU, and fine enough for a pull that is smooth by nature.
+ */
+const GRAVITY_DIM = 32;
 
 export class WebcamField {
   private readonly device: GPUDevice;
@@ -65,6 +79,9 @@ export class WebcamField {
   /** Between the two blur passes. */
   private readonly blurTemp: GPUTexture;
   private readonly blurred: GPUTexture;
+  /** Motion gravity's mass and pull grids. See cameraGravity.wgsl. */
+  private readonly gravityMass: GPUTexture;
+  private readonly gravityPull: GPUTexture;
 
   /** The camera frame, as copied out of the <video>. Sized to the camera. */
   private image: GPUTexture | null = null;
@@ -74,20 +91,23 @@ export class WebcamField {
   private readonly blurXUniforms: GPUBuffer;
   private readonly blurYUniforms: GPUBuffer;
   private readonly mapUniforms: GPUBuffer;
+  private readonly gravityUniforms: GPUBuffer;
 
   private ingestPipeline: GPURenderPipeline | null = null;
   private blurPipeline: GPURenderPipeline | null = null;
   private mapPipeline: GPURenderPipeline | null = null;
+  private massPipeline: GPURenderPipeline | null = null;
+  private gravityPipeline: GPURenderPipeline | null = null;
   private previewModule: GPUShaderModule | null = null;
   /** Built on first use, per canvas format -- see `renderPreview`. */
   private readonly previewPipelines = new Map<GPUTextureFormat, GPURenderPipeline>();
 
   private constructor(device: GPUDevice) {
     this.device = device;
-    const target = (label: string): GPUTexture =>
+    const target = (label: string, dim = CAMERA_FIELD_DIM): GPUTexture =>
       device.createTexture({
         label,
-        size: { width: CAMERA_FIELD_DIM, height: CAMERA_FIELD_DIM },
+        size: { width: dim, height: dim },
         format: CAMERA_FIELD_FORMAT,
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
       });
@@ -96,6 +116,8 @@ export class WebcamField {
     this.scalars = [target('camera-scalars-a'), target('camera-scalars-b')];
     this.blurTemp = target('camera-blur-temp');
     this.blurred = target('camera-blurred');
+    this.gravityMass = target('camera-gravity-mass', GRAVITY_DIM);
+    this.gravityPull = target('camera-gravity-pull', GRAVITY_DIM);
 
     // CLAMP, always. The camera picture has no far side to wrap to, and a blur
     // or stencil reaching past the edge should read the edge rather than the
@@ -117,6 +139,7 @@ export class WebcamField {
     this.blurXUniforms = uniforms('camera-blur-x-uniforms');
     this.blurYUniforms = uniforms('camera-blur-y-uniforms');
     this.mapUniforms = uniforms('camera-map-uniforms');
+    this.gravityUniforms = uniforms('camera-gravity-uniforms');
   }
 
   static async create(device: GPUDevice): Promise<WebcamField> {
@@ -131,10 +154,11 @@ export class WebcamField {
    */
   private async compile(): Promise<void> {
     const device = this.device;
-    const [ingest, blur, map, preview] = await Promise.all([
+    const [ingest, blur, map, gravity, preview] = await Promise.all([
       compileModule(device, 'cameraIngest.wgsl', ingestSource),
       compileModule(device, 'cameraBlur.wgsl', blurSource),
       compileModule(device, 'cameraMap.wgsl', mapSource),
+      compileModule(device, 'cameraGravity.wgsl', gravitySource),
       compileModule(device, 'cameraPreview.wgsl', previewSource),
     ]);
     this.previewModule = preview;
@@ -155,6 +179,8 @@ export class WebcamField {
     this.ingestPipeline = build('camera-ingest', ingest, 'ingest_fs');
     this.blurPipeline = build('camera-blur', blur, 'blur_fs');
     this.mapPipeline = build('camera-map', map, 'map_fs');
+    this.massPipeline = build('camera-gravity-mass', gravity, 'mass_fs');
+    this.gravityPipeline = build('camera-gravity', gravity, 'gravity_fs');
   }
 
   /**
@@ -287,10 +313,33 @@ export class WebcamField {
       { binding: 1, resource: this.blurTemp.createView() },
       { binding: 2, resource: this.sampler },
     ]);
+    // Motion gravity's long-range pull, only when it will be read: the sum is
+    // the most expensive thing the camera does, and wasted under any other
+    // mapping. A compile failure leaves the pull at zero (cleared on creation).
+    if (
+      settings.mapping === 'motionGravity' &&
+      this.massPipeline !== null &&
+      this.gravityPipeline !== null
+    ) {
+      this.device.queue.writeBuffer(
+        this.gravityUniforms,
+        0,
+        new Float32Array([worldAspect > 0 ? worldAspect : 1, settings.falloff, 0, 0]),
+      );
+      this.draw(encoder, 'camera-gravity-mass', this.massPipeline, this.gravityMass, [
+        { binding: 1, resource: this.blurred.createView() },
+        { binding: 2, resource: this.sampler },
+      ]);
+      this.draw(encoder, 'camera-gravity', this.gravityPipeline, this.gravityPull, [
+        { binding: 0, resource: { buffer: this.gravityUniforms } },
+        { binding: 3, resource: this.gravityMass.createView() },
+      ]);
+    }
     this.draw(encoder, 'camera-map', this.mapPipeline, this.field, [
       { binding: 0, resource: { buffer: this.mapUniforms } },
       { binding: 1, resource: this.blurred.createView() },
       { binding: 2, resource: this.sampler },
+      { binding: 3, resource: this.gravityPull.createView() },
     ]);
   }
 
@@ -303,7 +352,7 @@ export class WebcamField {
    * ended on, and Motion would difference the new stream against the old.
    */
   clear(encoder: GPUCommandEncoder): void {
-    for (const texture of [this.field, ...this.scalars]) {
+    for (const texture of [this.field, ...this.scalars, this.gravityPull]) {
       encoder
         .beginRenderPass({
           label: 'camera-clear',
@@ -375,10 +424,25 @@ export class WebcamField {
   }
 
   destroy(): void {
-    for (const t of [this.field, ...this.scalars, this.blurTemp, this.blurred]) t.destroy();
+    for (const t of [
+      this.field,
+      ...this.scalars,
+      this.blurTemp,
+      this.blurred,
+      this.gravityMass,
+      this.gravityPull,
+    ]) {
+      t.destroy();
+    }
     this.image?.destroy();
     this.image = null;
-    for (const b of [this.ingestUniforms, this.blurXUniforms, this.blurYUniforms, this.mapUniforms]) {
+    for (const b of [
+      this.ingestUniforms,
+      this.blurXUniforms,
+      this.blurYUniforms,
+      this.mapUniforms,
+      this.gravityUniforms,
+    ]) {
       b.destroy();
     }
   }

@@ -58,6 +58,7 @@ test('a saved setup round-trips', () => {
     destination: 'walls',
     gain: 2.5,
     blur: 0.75,
+    falloff: 2,
     direction: 'away',
     facing: 'environment',
     mirror: true,
@@ -160,10 +161,11 @@ test('strengths: exactly one destination while running, none while stopped', () 
 
 test('mapping indices are the shader’s numbering', () => {
   // cameraMap.wgsl branches on these exact values; this pins the order.
-  assert.deepEqual(CAMERA_MAPPINGS.map(mappingIndex), [0, 1, 2]);
+  assert.deepEqual(CAMERA_MAPPINGS.map(mappingIndex), [0, 1, 2, 3]);
   assert.equal(mappingIndex('edgesAcross'), 0);
   assert.equal(mappingIndex('edgesAlong'), 1);
   assert.equal(mappingIndex('motion'), 2);
+  assert.equal(mappingIndex('motionGravity'), 3);
 });
 
 test('a setup saved with the removed Gradient or Curl opens on its twin', () => {

@@ -32,7 +32,7 @@
 #include "fullscreenQuad.wgsl"
 
 struct MapUniforms {
-    // x: mapping   0 edges across, 1 edges along, 2 motion
+    // x: mapping   0 edges across, 1 edges along, 2 motion, 3 motion gravity
     // y: sign      +1 toward, -1 away
     // z: aspect    world width / world height
     // w: radius    stencil distance, in field-v units (world-height fractions)
@@ -42,6 +42,9 @@ struct MapUniforms {
 @group(0) @binding(0) var<uniform> u : MapUniforms;
 @group(0) @binding(1) var src : texture_2d<f32>;
 @group(0) @binding(2) var src_sampler : sampler;
+// Motion gravity's coarse pull, built by cameraGravity.wgsl. Bound always (the
+// pipeline's layout includes it); only read while the mapping is 3.
+@group(0) @binding(3) var gravity : texture_2d<f32>;
 
 // Motion values are small next to brightness (a smear of 0.3 is a lot of
 // movement), so its slope is scaled up to sit beside the others at one Gain.
@@ -70,6 +73,10 @@ fn map_fs(in : FsQuadVsOut) -> @location(0) vec4f {
         let g = vec2f(scalar_at(f + dx, 1) - scalar_at(f - dx, 1),
                       scalar_at(f + dy, 1) - scalar_at(f - dy, 1));
         v = g * MOTION_SLOPE_GAIN;
+    } else if (mapping == 3) {
+        // Motion gravity: the long-range pull, already summed at 32^2 and
+        // smooth, so a bilinear read is the whole of it.
+        v = textureSampleLevel(gravity, src_sampler, f, 0.0).xy;
     } else {
         // Sobel: direction and strength kept apart, so a soft ramp steers as
         // firmly as a hard edge and Gain means the same thing for both.

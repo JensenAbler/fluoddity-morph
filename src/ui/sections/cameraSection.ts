@@ -40,6 +40,7 @@ import {
   CAMERA_MAPPING_HELP,
   CAMERA_MAPPING_LABELS,
   MAX_CAMERA_GAIN,
+  MAX_CAMERA_FALLOFF,
 } from '../../webcam/webcamSettings.ts';
 import type { SectionContext, SectionHandle } from './section.ts';
 
@@ -194,6 +195,16 @@ export function buildCameraControls(
       'want little.',
     (v: number) => webcam.update({ blur: v }),
   );
+  // Shown only under Motion gravity, the one mapping it affects -- see refresh.
+  const falloffBlade = bind(
+    'falloff',
+    { label: 'Falloff', min: 0, max: MAX_CAMERA_FALLOFF, step: 0.05 },
+    'Falloff',
+    'How fast Motion gravity weakens with distance. 0 pulls as hard from ' +
+      'across the screen as from up close; 1 is gentle (2D gravity); 2 is ' +
+      'everyday gravity; 3 keeps the pull close to the motion.',
+    (v: number) => webcam.update({ falloff: v }),
+  );
   const previewToggle = bind(
     'preview',
     { label: 'Show Field' },
@@ -273,6 +284,8 @@ export function buildCameraControls(
 
   function refresh(): void {
     const s = webcam.settings;
+    const falloffDisplay = s.mapping === 'motionGravity' ? '' : 'none';
+    if (falloffBlade.style.display !== falloffDisplay) falloffBlade.style.display = falloffDisplay;
     let moved = false;
     for (const key of Object.keys(proxy) as Key[]) {
       if (proxy[key] !== s[key]) {
