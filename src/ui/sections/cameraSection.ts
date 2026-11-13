@@ -41,6 +41,7 @@ import {
   CAMERA_MAPPING_LABELS,
   MAX_CAMERA_GAIN,
   MAX_CAMERA_FALLOFF,
+  MAX_CAMERA_FADE,
 } from '../../webcam/webcamSettings.ts';
 import type { SectionContext, SectionHandle } from './section.ts';
 
@@ -205,6 +206,14 @@ export function buildCameraControls(
       'everyday gravity; 3 keeps the pull close to the motion.',
     (v: number) => webcam.update({ falloff: v }),
   );
+  const fadeBlade = bind(
+    'fade',
+    { label: 'Fade', min: 0, max: MAX_CAMERA_FADE, step: 0.05 },
+    'Fade',
+    'Seconds for Motion gravity to die away once the motion stops, so the ' +
+      'pull eases off instead of cutting out. 0 cuts off at once.',
+    (v: number) => webcam.update({ fade: v }),
+  );
   const previewToggle = bind(
     'preview',
     { label: 'Show Field' },
@@ -286,6 +295,7 @@ export function buildCameraControls(
     const s = webcam.settings;
     const falloffDisplay = s.mapping === 'motionGravity' ? '' : 'none';
     if (falloffBlade.style.display !== falloffDisplay) falloffBlade.style.display = falloffDisplay;
+    if (fadeBlade.style.display !== falloffDisplay) fadeBlade.style.display = falloffDisplay;
     let moved = false;
     for (const key of Object.keys(proxy) as Key[]) {
       if (proxy[key] !== s[key]) {

@@ -117,6 +117,11 @@ export interface WebcamSettings {
    * keeps the pull near the motion. See cameraGravity.wgsl.
    */
   readonly falloff: number;
+  /**
+   * Motion gravity only: 0..MAX_CAMERA_FADE seconds for the pull to die away
+   * once the motion stops. 0 cuts off at once. See FADE in cameraGravity.wgsl.
+   */
+  readonly fade: number;
   /** Flips every mapping's vector: toward bright/edges/motion, or away. */
   readonly direction: CameraDirection;
   readonly facing: CameraFacing;
@@ -137,13 +142,18 @@ export interface WebcamSettings {
 
 export const MAX_CAMERA_GAIN = 8;
 export const MAX_CAMERA_FALLOFF = 3;
+export const MAX_CAMERA_FADE = 5;
 
+// Walls, Toward, Gain 0.8: chosen by Jensen with Motion gravity (Nov 2026).
+// Walls because Trails leaves each config's rule to decide whether to follow
+// or flee, which made gravity push outward on some configs.
 export const DEFAULT_WEBCAM_SETTINGS: WebcamSettings = Object.freeze({
   mapping: 'edgesAlong',
-  destination: 'trails',
-  gain: 1,
+  destination: 'walls',
+  gain: 0.8,
   blur: 0.3,
   falloff: 1,
+  fade: 1.5,
   direction: 'toward',
   facing: 'user',
   mirror: true,
@@ -298,6 +308,7 @@ export function sanitizeWebcamSettings(record: Record<string, unknown>): WebcamS
     gain: num('gain', 0, MAX_CAMERA_GAIN, d.gain),
     blur: num('blur', 0, 1, d.blur),
     falloff: num('falloff', 0, MAX_CAMERA_FALLOFF, d.falloff),
+    fade: num('fade', 0, MAX_CAMERA_FADE, d.fade),
     direction: pick('direction', CAMERA_DIRECTIONS, d.direction),
     facing,
     // A missing mirror follows the facing it is paired with, not the default

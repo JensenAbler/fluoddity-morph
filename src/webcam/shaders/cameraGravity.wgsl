@@ -11,6 +11,7 @@
 // mapping is Motion gravity (see `WebcamField.remap`):
 //
 //   mass_fs     blurred scalars (256^2) -> motion mass per coarse cell (32^2)
+//               held with a fading memory, so the pull dies away (see FADE)
 //   gravity_fs  mass grid               -> the pull at each coarse cell (32^2)
 //
 // cameraMap.wgsl then samples the 32^2 pull bilinearly into the full field.
@@ -27,6 +28,15 @@
 // the same whatever the exponent, and only how it changes with distance moves.
 // Falloff 0 pulls equally from anywhere; 1 is 2D gravity; 2 is 3D gravity.
 //
+// ----------------------------------------------------------------------------
+// FADE
+// ----------------------------------------------------------------------------
+// Mass is the larger of this frame's motion and last frame's mass times
+// `decay` (< 1). New motion takes hold at once; when it stops, the mass -- and
+// so the pull -- eases away instead of cutting off. The host works `decay` out
+// from the Fade slider and the time since the last camera frame, and passes 1
+// when the same frame is merely re-mapped, so a slider drag does not age it.
+//
 // Like the other camera passes, positions come from in.clip.xy and rows run
 // v-up, so a difference along +row is world +y with no sign fix.
 // ============================================================================
@@ -36,7 +46,8 @@
 struct GravityUniforms {
     // x: aspect   world width / world height
     // y: falloff  exponent, see THE LAW above
-    // z, w: unused
+    // z: decay    how much of last frame's mass survives, see FADE
+    // w: unused
     params : vec4f,
 }
 
@@ -44,6 +55,8 @@ struct GravityUniforms {
 @group(0) @binding(1) var src : texture_2d<f32>;
 @group(0) @binding(2) var src_sampler : sampler;
 @group(0) @binding(3) var mass : texture_2d<f32>;
+// Last frame's mass, for FADE. A separate texture from `mass` (ping-pong).
+@group(0) @binding(4) var prev_mass : texture_2d<f32>;
 
 // Must match `GRAVITY_DIM` in webcamField.ts, which sizes the targets.
 const GRAVITY_DIM : i32 = 32;
@@ -75,7 +88,9 @@ fn mass_fs(in : FsQuadVsOut) -> @location(0) vec4f {
             sum += textureSampleLevel(src, src_sampler, texel / src_dim, 0.0).g;
         }
     }
-    return vec4f(sum / 16.0, 0.0, 0.0, 1.0);
+    let fresh = sum / 16.0;
+    let held = textureLoad(prev_mass, vec2i(cell), 0).r * u.params.z;
+    return vec4f(max(fresh, held), 0.0, 0.0, 1.0);
 }
 
 // The summed pull of every cell's mass on this one, in world axes.

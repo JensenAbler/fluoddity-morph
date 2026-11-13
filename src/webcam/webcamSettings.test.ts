@@ -59,6 +59,7 @@ test('a saved setup round-trips', () => {
     gain: 2.5,
     blur: 0.75,
     falloff: 2,
+    fade: 3,
     direction: 'away',
     facing: 'environment',
     mirror: true,

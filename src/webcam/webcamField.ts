@@ -79,9 +79,19 @@ export class WebcamField {
   /** Between the two blur passes. */
   private readonly blurTemp: GPUTexture;
   private readonly blurred: GPUTexture;
-  /** Motion gravity's mass and pull grids. See cameraGravity.wgsl. */
-  private readonly gravityMass: GPUTexture;
+  /**
+   * Motion gravity's mass grids (ping-ponged: each frame fades the other in,
+   * see FADE in cameraGravity.wgsl) and its pull grid.
+   */
+  private readonly gravityMass: readonly [GPUTexture, GPUTexture];
+  private massCurrent = 0;
   private readonly gravityPull: GPUTexture;
+  /** When the last camera frame was mapped, for Fade's decay. */
+  private lastFrameAt: number | null = null;
+  /** Whether the previous remap ran the gravity passes; if not, the held mass is stale. */
+  private gravityWarm = false;
+  /** Seconds between the last two camera frames, clamped. */
+  private frameDt = 0;
 
   /** The camera frame, as copied out of the <video>. Sized to the camera. */
   private image: GPUTexture | null = null;
@@ -116,7 +126,10 @@ export class WebcamField {
     this.scalars = [target('camera-scalars-a'), target('camera-scalars-b')];
     this.blurTemp = target('camera-blur-temp');
     this.blurred = target('camera-blurred');
-    this.gravityMass = target('camera-gravity-mass', GRAVITY_DIM);
+    this.gravityMass = [
+      target('camera-gravity-mass-a', GRAVITY_DIM),
+      target('camera-gravity-mass-b', GRAVITY_DIM),
+    ];
     this.gravityPull = target('camera-gravity-pull', GRAVITY_DIM);
 
     // CLAMP, always. The camera picture has no far side to wrap to, and a blur
@@ -232,7 +245,7 @@ export class WebcamField {
     ]);
     this.primed = true;
 
-    this.remap(encoder, worldAspect, settings);
+    this.remap(encoder, worldAspect, settings, true);
     return true;
   }
 
@@ -276,7 +289,12 @@ export class WebcamField {
    * needs when no new frame has arrived -- a slider dragged while the camera is
    * covered, say -- so the field and the preview follow the slider at once.
    */
-  remap(encoder: GPUCommandEncoder, worldAspect: number, settings: WebcamSettings): void {
+  remap(
+    encoder: GPUCommandEncoder,
+    worldAspect: number,
+    settings: WebcamSettings,
+    newFrame = false,
+  ): void {
     if (this.blurPipeline === null || this.mapPipeline === null) return;
     const sigma = blurTexels(settings.blur);
     const sx = blurStep(sigma, worldAspect, 'x');
@@ -316,25 +334,44 @@ export class WebcamField {
     // Motion gravity's long-range pull, only when it will be read: the sum is
     // the most expensive thing the camera does, and wasted under any other
     // mapping. A compile failure leaves the pull at zero (cleared on creation).
-    if (
+    const gravity =
       settings.mapping === 'motionGravity' &&
       this.massPipeline !== null &&
-      this.gravityPipeline !== null
-    ) {
+      this.gravityPipeline !== null;
+    if (newFrame) {
+      const now = performance.now();
+      this.frameDt =
+        this.lastFrameAt === null ? 0 : Math.min(0.5, Math.max(0, (now - this.lastFrameAt) / 1000));
+      this.lastFrameAt = now;
+    }
+    if (gravity && this.massPipeline !== null && this.gravityPipeline !== null) {
+      // Fade: the held mass falls to about 5% (e^-3) over `settings.fade`
+      // seconds. A re-map of the same frame keeps it as it is (decay 1); a
+      // held mass left over from before gravity was selected is dropped.
+      let decay = 1;
+      if (!this.gravityWarm) decay = 0;
+      else if (newFrame) decay = settings.fade > 0 ? Math.exp((-3 * this.frameDt) / settings.fade) : 0;
       this.device.queue.writeBuffer(
         this.gravityUniforms,
         0,
-        new Float32Array([worldAspect > 0 ? worldAspect : 1, settings.falloff, 0, 0]),
+        new Float32Array([worldAspect > 0 ? worldAspect : 1, settings.falloff, decay, 0]),
       );
-      this.draw(encoder, 'camera-gravity-mass', this.massPipeline, this.gravityMass, [
+      // A re-map overwrites this frame's result rather than fading it again.
+      if (newFrame || !this.gravityWarm) this.massCurrent = 1 - this.massCurrent;
+      const prev = this.gravityMass[1 - this.massCurrent]!;
+      const next = this.gravityMass[this.massCurrent]!;
+      this.draw(encoder, 'camera-gravity-mass', this.massPipeline, next, [
+        { binding: 0, resource: { buffer: this.gravityUniforms } },
         { binding: 1, resource: this.blurred.createView() },
         { binding: 2, resource: this.sampler },
+        { binding: 4, resource: prev.createView() },
       ]);
       this.draw(encoder, 'camera-gravity', this.gravityPipeline, this.gravityPull, [
         { binding: 0, resource: { buffer: this.gravityUniforms } },
-        { binding: 3, resource: this.gravityMass.createView() },
+        { binding: 3, resource: next.createView() },
       ]);
     }
+    this.gravityWarm = gravity;
     this.draw(encoder, 'camera-map', this.mapPipeline, this.field, [
       { binding: 0, resource: { buffer: this.mapUniforms } },
       { binding: 1, resource: this.blurred.createView() },
@@ -352,7 +389,7 @@ export class WebcamField {
    * ended on, and Motion would difference the new stream against the old.
    */
   clear(encoder: GPUCommandEncoder): void {
-    for (const texture of [this.field, ...this.scalars, this.gravityPull]) {
+    for (const texture of [this.field, ...this.scalars, this.gravityPull, ...this.gravityMass]) {
       encoder
         .beginRenderPass({
           label: 'camera-clear',
@@ -368,6 +405,7 @@ export class WebcamField {
         .end();
     }
     this.primed = false;
+    this.lastFrameAt = null;
   }
 
   /**
@@ -429,7 +467,8 @@ export class WebcamField {
       ...this.scalars,
       this.blurTemp,
       this.blurred,
-      this.gravityMass,
+      this.gravityMass[0],
+      this.gravityMass[1],
       this.gravityPull,
     ]) {
       t.destroy();
