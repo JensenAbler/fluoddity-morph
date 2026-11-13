@@ -144,11 +144,11 @@ export const MAX_CAMERA_GAIN = 8;
 export const MAX_CAMERA_FALLOFF = 3;
 export const MAX_CAMERA_FADE = 5;
 
-// Walls, Toward, Gain 0.8: chosen by Jensen with Motion gravity (Nov 2026).
+// Motion gravity, Walls, Toward, Gain 0.8: chosen by Jensen (Nov 2026).
 // Walls because Trails leaves each config's rule to decide whether to follow
 // or flee, which made gravity push outward on some configs.
 export const DEFAULT_WEBCAM_SETTINGS: WebcamSettings = Object.freeze({
-  mapping: 'edgesAlong',
+  mapping: 'motionGravity',
   destination: 'walls',
   gain: 0.8,
   blur: 0.3,
