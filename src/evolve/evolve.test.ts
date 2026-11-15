@@ -321,6 +321,33 @@ test('chill: a favorite the drift keeps freezing near gets picked less', () => {
   assert.ok(chilled.length > 0, 'some favorite was blamed for the cold');
 });
 
+test('path chill: stillness on the road is not blamed on the favorite ahead, only stillness near it', () => {
+  const ev = new Evolver(seeded(61));
+  ev.settings.motion = 'path';
+  ev.settings.strideSeconds = 100;
+  ev.setPool([
+    { name: 'a', project: project(0), likes: 1 },
+    { name: 'b', project: project(1), likes: 1 },
+  ]);
+  ev.start(project(0.5));
+  const warm = { relative: 0.9, cold: false, coldFor: 0 };
+  const cold = { relative: 0.02, cold: true, coldFor: 1 };
+  const chills = () => ev.view().attractors.filter((x) => x.chill > 0).map((x) => x.name);
+  ev.setTemperature(warm);
+  for (let i = 0; i < 40; i++) ev.step(1); // 40% of the way along the leg
+  const dest = ev.debug().b;
+  ev.setTemperature(cold);
+  for (let i = 0; i < 5; i++) ev.step(1); // cold in the middle (to ~55%)
+  assert.equal(ev.debug().b, dest, 'still on the same leg');
+  assert.deepEqual(chills(), [], 'nobody is blamed for cold on the road');
+  ev.setTemperature(warm);
+  while (ev.debug().w <= 0.85) ev.step(1);
+  assert.equal(ev.debug().b, dest, 'still on the same leg');
+  ev.setTemperature(cold);
+  for (let i = 0; i < 3; i++) ev.step(1); // cold on the last stretch
+  assert.deepEqual(chills(), [dest], 'cold near the favorite is blamed on it');
+});
+
 function famProject(rule: number, lateral: number, angle: number, axial: number) {
   return makeProject({
     configs: [

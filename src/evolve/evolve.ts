@@ -1283,13 +1283,16 @@ export class Evolver {
     let leg = this.leg!;
     const cold = this.temperature.cold;
 
-    // LEARN, as the leash does: blame the favorite being approached for cold,
-    // and remember the favorite last reached or left while clearly warm.
+    // LEARN: cold is blamed on a favorite only while NEAR it -- the one being
+    // approached on the last stretch of the leg, the one just left on the
+    // first. Stillness out on the road between them is nobody's fault (and a
+    // leg begun mid-road, after a turn-back, has no origin to blame). The
+    // same nearness remembers the favorite last reached or left while warm.
+    const nearby = leg.u > 0.8 ? leg.to : leg.u < 0.2 ? leg.origin : null;
     if (cold) {
-      this.chill.set(leg.to.key, (this.chill.get(leg.to.key) ?? 0) + dt);
+      if (nearby !== null) this.chill.set(nearby.key, (this.chill.get(nearby.key) ?? 0) + dt);
     } else if (this.temperature.relative > 0.5) {
-      if (leg.u > 0.8) this.warmAnchor = leg.to;
-      else if (leg.u < 0.2 && leg.origin !== null) this.warmAnchor = leg.origin;
+      if (nearby !== null) this.warmAnchor = nearby;
     }
     if (cold && this.temperature.coldFor > COLD_ABANDON_SECONDS && !this.abandonedThisSpell) {
       // ABANDON: head, from right here, for where it was last alive.
