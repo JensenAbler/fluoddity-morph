@@ -162,6 +162,7 @@ import { MorphTimeline, startOf } from '../morph/morph.ts';
 import { Evolver } from '../evolve/evolve.ts';
 import { Telemetry, r4 } from '../telemetry/telemetry.ts';
 import { TemperatureProbe } from '../telemetry/temperature.ts';
+import { HueAnchor } from '../telemetry/hueAnchor.ts';
 import { UiUsage } from '../telemetry/uiUsage.ts';
 import { HOME_CATEGORY, SEED_LIKES } from '../evolve/seedPool.ts';
 import { clearPool, loadPool, savePool } from '../evolve/poolStore.ts';
@@ -410,6 +411,8 @@ export class Orchestrator implements CommandBus {
   /** Measured particle motion ("0 kelvin" detector). Built on first frame. */
   private temperatureProbe: TemperatureProbe | null = null;
   private seenArrivals = 0;
+  /** Holds a one-colour screen's colour still while evolving or morphing (display only). */
+  private readonly hueAnchor = new HueAnchor();
 
   /**
    * Project state from before a hover-preview began, so a committed load
@@ -953,6 +956,17 @@ export class Orchestrator implements CommandBus {
       );
       this.setProject(makeProject({ ...this.project, configs }));
     }
+    // THE HUE ANCHOR (hueAnchor.ts): when the screen has collapsed to one
+    // colour while evolving or morphing, hold that colour still rather than
+    // letting the whole picture strobe round the wheel. Display only.
+    if (this.temperatureProbe !== null) {
+      this.temperatureProbe.setHueScale(this.project.configs[0]?.colorSensitivity ?? 1);
+      this.hueAnchor.observe(this.temperatureProbe.value);
+    }
+    if (!this.paused) {
+      const dt = this.recorder !== null ? 1 / RECORDING_FPS : Math.min(input.dt, 0.1);
+      this.hueAnchor.step(dt, this.evolver.running || this.morph.playing);
+    }
     this.telemetry.tick(
       performance.now(),
       (this.evolver.running || this.morph.playing || this.drift.running) && !this.paused,
@@ -1384,18 +1398,20 @@ export class Orchestrator implements CommandBus {
    * from the studio, whose checkbox maps onto the two signal modes only.
    */
   private appearanceFor(config: SimulationConfig): readonly SwatchAppearance[] {
+    // The hue anchor turns the wheel for display only (see `hueAnchor`).
+    const colorOffset = config.colorOffset + this.hueAnchor.offset;
     if (
       this.appearanceTable === null ||
       this.appearanceSensitivity !== config.colorSensitivity ||
-      this.appearanceOffset !== config.colorOffset
+      this.appearanceOffset !== colorOffset
     ) {
       this.appearanceSensitivity = config.colorSensitivity;
-      this.appearanceOffset = config.colorOffset;
+      this.appearanceOffset = colorOffset;
       this.appearanceTable = Array.from({ length: CAM_BRUSH_SWATCH_COUNT }, () => ({
         hue: 0,
         saturation: 0,
         colorSensitivity: config.colorSensitivity,
-        colorOffset: config.colorOffset,
+        colorOffset,
       }));
     }
     return this.appearanceTable;
@@ -2284,7 +2300,14 @@ export class Orchestrator implements CommandBus {
       temp:
         temp === undefined
           ? undefined
-          : { speed: Number(temp.speed.toPrecision(4)), rel: r4(temp.relative), cold: temp.cold },
+          : {
+              speed: Number(temp.speed.toPrecision(4)),
+              rel: r4(temp.relative),
+              cold: temp.cold,
+              spread: temp.colorSpread === undefined ? undefined : r4(temp.colorSpread),
+              anchor: r4(this.hueAnchor.offset),
+              hold: r4(this.hueAnchor.hold),
+            },
       evolving: this.evolver.running,
       morphing: this.morph.playing,
       evolve: this.evolver.running

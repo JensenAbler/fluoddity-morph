@@ -21,7 +21,12 @@
 
 const SAMPLE = 4096;
 const BYTES_PER_ENTITY = 32;
-const INTERVAL_MS = 1000;
+/**
+ * Four readings a second. Once a second was plenty for stillness, but the hue
+ * anchor (`hueAnchor.ts`) tracks how fast a one-colour screen's hue slides, and
+ * a hue sampled once a second can lap the wheel unseen. The readback is tiny.
+ */
+const INTERVAL_MS = 250;
 /** Below this fraction of the recent peak, the run counts as cold. */
 const COLD_FRACTION = 0.18;
 /** The recent peak decays by half over about this long. */
@@ -41,6 +46,10 @@ export interface Temperature {
    * each other apart, and stillness follows (Jensen, Oct 30). Absent = unknown.
    */
   readonly colorSpread?: number;
+  /** Average hue of the particles BEFORE `colorOffset`, in turns [0, 1). Absent = unknown. */
+  readonly meanHue?: number;
+  /** `performance.now()` of this reading; a new value means a new reading. */
+  readonly sampledAt?: number;
 }
 
 export class TemperatureProbe {
@@ -149,6 +158,10 @@ export class TemperatureProbe {
     }
     if (n === 0) return;
     const colorSpread = nc > 0 ? colorSpreadOf(cs / nc, sn / nc) : 1;
+    const meanHue =
+      nc > 0 && (cs !== 0 || sn !== 0)
+        ? (((Math.atan2(sn / nc, cs / nc) / (2 * Math.PI)) % 1) + 1) % 1
+        : undefined;
     const speed = sum / n;
     const dt = Math.max(0, (nowMs - this.lastPeakTime) / 1000);
     this.lastPeakTime = nowMs;
@@ -163,6 +176,8 @@ export class TemperatureProbe {
       cold,
       coldFor: this.coldSince === null ? 0 : (nowMs - this.coldSince) / 1000,
       colorSpread,
+      meanHue,
+      sampledAt: nowMs,
     };
   }
 }
