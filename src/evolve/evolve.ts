@@ -1281,38 +1281,10 @@ export class Evolver {
       this.startLeg(first, null);
     }
     let leg = this.leg!;
+    // COLD: the particles have gone still. Path mode's whole answer is to
+    // hurry on to the favorite ahead (the speed-up below). It never turns
+    // back, never abandons the leg, and blames no favorite for the cold.
     const cold = this.temperature.cold;
-
-    // LEARN: cold is blamed on a favorite only while NEAR it -- the one being
-    // approached on the last stretch of the leg, the one just left on the
-    // first. Stillness out on the road between them is nobody's fault (and a
-    // leg begun mid-road, after a turn-back, has no origin to blame). The
-    // same nearness remembers the favorite last reached or left while warm.
-    const nearby = leg.u > 0.8 ? leg.to : leg.u < 0.2 ? leg.origin : null;
-    if (cold) {
-      if (nearby !== null) this.chill.set(nearby.key, (this.chill.get(nearby.key) ?? 0) + dt);
-    } else if (this.temperature.relative > 0.5) {
-      if (nearby !== null) this.warmAnchor = nearby;
-    }
-    if (cold && this.temperature.coldFor > COLD_ABANDON_SECONDS && !this.abandonedThisSpell) {
-      // ABANDON: head, from right here, for where it was last alive.
-      const anchor =
-        this.warmAnchor !== null && this.pool.includes(this.warmAnchor) && this.warmAnchor !== leg.to
-          ? this.warmAnchor
-          : this.otherThan(leg.to);
-      this.focus = anchor;
-      this.startLeg(anchor, null);
-      this.abandonedThisSpell = true;
-      this.turnedThisSpell = true;
-    } else if (cold && this.temperature.coldFor > COLD_TURN_SECONDS && !this.turnedThisSpell) {
-      // TURN BACK toward the favorite this leg came from.
-      if (leg.origin !== null) {
-        this.focus = leg.origin;
-        this.startLeg(leg.origin, null);
-      }
-      this.turnedThisSpell = true;
-    }
-    leg = this.leg!;
 
     const prev = this.genes.map((g) => [...g.x]);
     const u = leg.u + ((cold ? COLD_SPEEDUP : 1) * dt) / Math.max(1, s.strideSeconds);

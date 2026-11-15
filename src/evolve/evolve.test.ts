@@ -321,31 +321,30 @@ test('chill: a favorite the drift keeps freezing near gets picked less', () => {
   assert.ok(chilled.length > 0, 'some favorite was blamed for the cold');
 });
 
-test('path chill: stillness on the road is not blamed on the favorite ahead, only stillness near it', () => {
+test('path cold: never turns back, abandons or blames; it just hurries to the favorite ahead', () => {
   const ev = new Evolver(seeded(61));
   ev.settings.motion = 'path';
   ev.settings.strideSeconds = 100;
   ev.setPool([
     { name: 'a', project: project(0), likes: 1 },
     { name: 'b', project: project(1), likes: 1 },
+    { name: 'c', project: project(-1), likes: 1 },
   ]);
   ev.start(project(0.5));
-  const warm = { relative: 0.9, cold: false, coldFor: 0 };
-  const cold = { relative: 0.02, cold: true, coldFor: 1 };
   const chills = () => ev.view().attractors.filter((x) => x.chill > 0).map((x) => x.name);
-  ev.setTemperature(warm);
+  ev.setTemperature({ relative: 0.9, cold: false, coldFor: 0 });
   for (let i = 0; i < 40; i++) ev.step(1); // 40% of the way along the leg
   const dest = ev.debug().b;
-  ev.setTemperature(cold);
-  for (let i = 0; i < 5; i++) ev.step(1); // cold in the middle (to ~55%)
-  assert.equal(ev.debug().b, dest, 'still on the same leg');
-  assert.deepEqual(chills(), [], 'nobody is blamed for cold on the road');
-  ev.setTemperature(warm);
-  while (ev.debug().w <= 0.85) ev.step(1);
-  assert.equal(ev.debug().b, dest, 'still on the same leg');
-  ev.setTemperature(cold);
-  for (let i = 0; i < 3; i++) ev.step(1); // cold on the last stretch
-  assert.deepEqual(chills(), [dest], 'cold near the favorite is blamed on it');
+  const w0 = ev.debug().w;
+  // Cold for far longer than the old turn-back (6 s) and abandon (15 s) waits.
+  ev.setTemperature({ relative: 0.02, cold: true, coldFor: 30 });
+  for (let i = 0; i < 10; i++) ev.step(1);
+  assert.equal(ev.debug().b, dest, 'still heading for the same favorite');
+  assert.ok(Math.abs(ev.debug().w - (w0 + 0.3)) < 1e-6, `hurried at 3x: ${ev.debug().w}`);
+  for (let i = 0; i < 12; i++) ev.step(1);
+  assert.equal(ev.debug().a, dest, 'it arrived there and set off from it');
+  assert.notEqual(ev.debug().b, dest, 'toward the next favorite');
+  assert.deepEqual(chills(), [], 'and nobody was blamed for the cold');
 });
 
 function famProject(rule: number, lateral: number, angle: number, axial: number) {
@@ -553,11 +552,13 @@ test('path mode hops between physics regimes and reaches out-of-range physics as
   assert.ok(Math.abs(c.drag + 0.6) < 0.01, `negative drag kept: ${c.drag}`);
 });
 
-test('cohort colour never jumps, even when a cold spell restarts the leg mid-fade', () => {
+test('cohort colour never jumps, even when a cold spell hurries the leg mid-fade', () => {
   const ev = new Evolver(seeded(101));
   ev.settings.motion = 'path';
   ev.settings.linger = 0;
-  ev.settings.strideSeconds = 10;
+  // Long enough that the fade, even hurried 3x by cold, stays under the
+  // per-frame bound below: this checks for pops, not for pace.
+  ev.settings.strideSeconds = 30;
   const many = (r: number, n: number) => makeProject({
     configs: [{ ...project(r).configs[0]!, cohorts: n, mutationScale: 0.3, colorByCohort: true }],
     world: makeWorldSettings(),
@@ -569,8 +570,8 @@ test('cohort colour never jumps, even when a cold spell restarts the leg mid-fad
   assert.ok(ev.start(many(0, 3)));
   let prev = ev.cohortColorMix;
   let worst = 0;
-  for (let f = 0; f < 1600; f++) {
-    // A cold spell every so often, long enough to abandon the leg mid-fade.
+  for (let f = 0; f < 4800; f++) {
+    // A cold spell every so often, which hurries the leg along mid-fade.
     const cold = f % 400 > 180 && f % 400 < 260;
     ev.setTemperature({ relative: cold ? 0 : 1, cold, coldFor: cold ? ((f % 400) - 180) * 0.25 : 0 });
     ev.step(0.05);
