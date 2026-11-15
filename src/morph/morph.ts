@@ -13,7 +13,9 @@
  *
  * ## What blends and what cuts
  *
- *   - Every finite number blends linearly, including all 80 rule floats.
+ *   - Every finite number blends linearly, except the rule's amplitudes: they
+ *     keep their strength through the blend (`ruleBlend.ts`), so two unrelated
+ *     rules don't cancel into a weak one in the middle.
  *   - Integer modes (cohort count, initial conditions, boundary condition) and
  *     booleans CUT at the midpoint of a transition. There is no half-way grid.
  *   - `mutationSeed` is a hash input, so a blended seed is noise. When the two
@@ -28,6 +30,7 @@
 
 import type { SimulationConfig, WorldSettings } from '../particleSystem/config.ts';
 import { type Project, makeProject } from '../project/project.ts';
+import { blendRule } from '../project/ruleBlend.ts';
 
 export type Easing = 'smooth' | 'linear';
 
@@ -117,7 +120,7 @@ export function lerpConfig(a: SimulationConfig, b: SimulationConfig, u: number):
       out.mutationSeed = a.mutationSeed;
     } else if (u < 0.75) {
       const w = (u - 0.25) / 0.5;
-      out.rule = a.rule.map((v, i) => lerp(v, b.rule[i]!, w));
+      out.rule = blendRule(a.rule, b.rule, w);
       out.mutationScale = 0;
       out.mutationSeed = w < 0.5 ? a.mutationSeed : b.mutationSeed;
     } else {
@@ -131,7 +134,7 @@ export function lerpConfig(a: SimulationConfig, b: SimulationConfig, u: number):
   out.rule = sameRule
     ? a.rule
     : blendable
-      ? a.rule.map((v, i) => lerp(v, b.rule[i]!, u))
+      ? blendRule(a.rule, b.rule, u)
       : u < 0.5
         ? a.rule
         : b.rule;

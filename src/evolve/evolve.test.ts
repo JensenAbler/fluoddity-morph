@@ -445,10 +445,17 @@ test('path mode: walks straight to each favorite, arrives, and moves on without 
   }
   // 60 s at 10 s a leg: about six favorites reached.
   assert.ok(arrivals.length >= 5, `arrivals ${arrivals.length}`);
+  // Rule amplitudes keep their strength (ruleBlend.ts), so between these
+  // opposite rules they swing round a half circle instead of crossing the
+  // chord through zero. A half circle of radius r is pi*r long against the
+  // chord's 2r, and at the turn one float can carry nearly all of it -- so a
+  // single float may move up to pi times its straight-line pace. Still a
+  // smooth glide: no frame moves further than the arc's own pace.
+  const ARC = Math.PI;
   // Each favorite was actually reached (within one frame's travel)...
-  for (const d of arrivals) assert.ok(d <= 0.021, `missed a favorite by ${d}`);
+  for (const d of arrivals) assert.ok(d <= 0.021 * ARC, `missed a favorite by ${d}`);
   // ...and nothing ever jumped: at most 2 units per 10 s leg, so 0.01 a frame.
-  assert.ok(maxStep <= 0.0101, `jump of ${maxStep}`);
+  assert.ok(maxStep <= 0.0101 * ARC, `jump of ${maxStep}`);
 });
 
 test('linger: an S-curve that spends its time near the favorites', () => {

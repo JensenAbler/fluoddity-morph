@@ -41,6 +41,7 @@
 import type { SimulationConfig, WorldSettings } from '../particleSystem/config.ts';
 import { BC } from '../particleSystem/config.ts';
 import { type Project, makeProject } from '../project/project.ts';
+import { blendCenter } from '../project/ruleBlend.ts';
 
 export const RULE_GENES = 10;
 const FLOATS_PER_CENTER = 8;
@@ -1322,7 +1323,13 @@ export class Evolver {
       // A HOP BETWEEN PHYSICS FAMILIES: physics jumps across around the middle
       // of the leg instead of lingering in the in-between physics.
       const ee = this.hopping && GENES[i]!.family === 'physics' ? hopEase(leg.u) : e;
-      g.x = from.map((a, k) => a + ee * ((to[k] ?? a) - a) + bump * (g.offset[k] ?? 0));
+      // A rule center keeps its strength along the line (`ruleBlend.ts`), so
+      // two unrelated favorites don't cancel into a weak rule in the middle.
+      const line =
+        GENES[i]!.ruleStart !== null
+          ? blendCenter(from, to, ee)
+          : from.map((a, k) => a + ee * ((to[k] ?? a) - a));
+      g.x = line.map((v, k) => v + bump * (g.offset[k] ?? 0));
       clampPath(i, g.x, from, to);
       g.v = g.x.map((x, k) => (dt > 0 ? (x - (prev[i]![k] ?? x)) / dt : 0));
     });
