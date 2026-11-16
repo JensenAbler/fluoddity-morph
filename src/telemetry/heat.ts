@@ -16,24 +16,29 @@ import type { SimulationConfig, WorldSettings } from '../particleSystem/config.t
  * scene is healthy. Physics only: the project, favorites and saves never see it.
  */
 
-/** Picture change (pictureProbe.ts) where warming begins. Lively runs sit above ~0.2. */
-export const COOL_START = 0.2;
+// EARLIER AND STRONGER (Nov 16): in the Nov 15 Leash run the scene went dull
+// several times before heat caught it, and 20 s at full heat (0.15 jitter,
+// 0.99 -> 0.96 trails) did not always thaw it. So warming now starts while
+// the picture is merely slowing, and full heat pushes twice as hard.
+
+/** Picture change (pictureProbe.ts) where warming begins. */
+export const COOL_START = 0.3;
 /** Picture change where warming is full. Freezes measured 0.00-0.09. */
-export const COOL_FULL = 0.08;
-/** Extra sensor angle jitter at full heat, in half-turns (0.15 = about +-27 degrees). */
-export const MAX_ANGLE_JITTER = 0.15;
-/** Trail decay is multiplied by up to 1 + this at full heat (0.99 persistence -> 0.96). */
-export const MAX_DECAY_BOOST = 3;
+export const COOL_FULL = 0.12;
+/** Extra sensor angle jitter at full heat, in half-turns (0.3 = about +-54 degrees). */
+export const MAX_ANGLE_JITTER = 0.3;
+/** Trail decay is multiplied by up to 1 + this at full heat (0.99 persistence -> 0.93). */
+export const MAX_DECAY_BOOST = 6;
 /** Seconds to warm up toward the target: quick, so a slide is caught early. */
-export const RISE_SECONDS = 1;
+export const RISE_SECONDS = 0.5;
 /** Seconds to cool back down: slow, so a revived scene is not dropped straight back. */
 export const FALL_SECONDS = 6;
 
 const clamp01 = (x: number): number => Math.min(1, Math.max(0, x));
 
 /** Fraction of particles stuck where warming begins / is full, on its own. */
-export const STUCK_START = 0.6;
-export const STUCK_FULL = 0.95;
+export const STUCK_START = 0.4;
+export const STUCK_FULL = 0.8;
 
 /**
  * How close to dying, 0..1: the larger of two readings.

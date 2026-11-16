@@ -7,7 +7,9 @@ const DEFAULT_CONFIG = SIMULATION_CONFIG_DEFAULTS as unknown as SimulationConfig
 
 test('a lively picture is not dying; a frozen one is', () => {
   assert.equal(dyingScore(0.4, 0.1), 0);
-  assert.equal(dyingScore(0.2, 0.3), 0);
+  assert.equal(dyingScore(0.35, 0.3), 0);
+  // Merely slowing now warms a little.
+  assert.ok(dyingScore(0.2, 0.3) > 0.2);
   assert.equal(dyingScore(0.05, 1), 1);
   assert.equal(dyingScore(undefined, 0.3), 0);
   // Run 3, 1:26: 85% stuck while a colour flicker kept picture change at 0.32.
@@ -22,7 +24,7 @@ test('a lively picture is not dying; a frozen one is', () => {
 test('heat rises quickly, falls slowly, and is zero when inactive', () => {
   const h = new Heat();
   for (let i = 0; i < 60; i++) h.step(1 / 60, true, 1);
-  assert.ok(h.level > 0.6 && h.level < 0.7, `one second up: ${h.level}`);
+  assert.ok(h.level > 0.8 && h.level < 0.9, `one second up: ${h.level}`);
   const peak = h.level;
   for (let i = 0; i < 60; i++) h.step(1 / 60, true, 0);
   assert.ok(h.level > peak * 0.8, 'one second later still mostly warm');
@@ -36,5 +38,5 @@ test('heat touches only jitter and trail fade, and nothing at zero', () => {
   assert.ok(Math.abs(heatConfig(c, 1).sensorAngleJitter - (0.1 + MAX_ANGLE_JITTER)) < 1e-12);
   const w = { trailPersistence: 0.99 } as Parameters<typeof heatWorld>[0];
   assert.equal(heatWorld(w, 0), w);
-  assert.ok(Math.abs(heatWorld(w, 1).trailPersistence - 0.96) < 1e-9);
+  assert.ok(Math.abs(heatWorld(w, 1).trailPersistence - 0.93) < 1e-9);
 });
