@@ -29,10 +29,17 @@ export const COOL_FULL = 0.12;
 export const MAX_ANGLE_JITTER = 0.3;
 /** Trail decay is multiplied by up to 1 + this at full heat (0.99 persistence -> 0.93). */
 export const MAX_DECAY_BOOST = 6;
-/** Seconds to warm up toward the target: quick, so a slide is caught early. */
+// PULSES, NOT A THERMOSTAT (Nov 16): held continuously, heat was on most of
+// a 17-minute run (above 0.1 for 73% of it, mean 0.34). Heat now comes as
+// single pulses -- a quick ramp up then a cool-down -- at most one per
+// PULSE_SECONDS, with nothing in between.
+
+/** Seconds a pulse takes to ramp up. */
 export const RISE_SECONDS = 0.5;
-/** Seconds to cool back down: slow, so a revived scene is not dropped straight back. */
-export const FALL_SECONDS = 6;
+/** Seconds per pulse, ramp up and cool-down together; also the minimum gap between pulse starts. */
+export const PULSE_SECONDS = 5;
+/** Dying score at which a pulse fires. Its height is the score itself. */
+export const PULSE_TRIGGER = 0.3;
 
 const clamp01 = (x: number): number => Math.min(1, Math.max(0, x));
 
@@ -59,16 +66,39 @@ export function dyingScore(change: number | undefined, stuck: number | undefined
   return Math.max(slowing * weight, stuckAlone);
 }
 
+/** Pulse shape over 0..PULSE_SECONDS: linear ramp up, then a smooth cosine cool-down to 0. */
+export function pulseShape(t: number): number {
+  if (t <= 0 || t >= PULSE_SECONDS) return 0;
+  if (t < RISE_SECONDS) return t / RISE_SECONDS;
+  const u = (t - RISE_SECONDS) / (PULSE_SECONDS - RISE_SECONDS);
+  return 0.5 * (1 + Math.cos(Math.PI * u));
+}
+
 export class Heat {
   /** Current heat, 0..1. */
   level = 0;
+  /** Seconds since the current pulse started (Infinity when none has). */
+  private age = Infinity;
+  /** Height of the current pulse. */
+  private height = 0;
 
-  /** Advance by `dt` seconds toward `dying` (or toward 0 when not `active`). */
+  /** Advance by `dt` seconds. Fires a pulse when `dying` crosses the trigger and the last one is done. */
   step(dt: number, active: boolean, dying: number): void {
-    const target = active ? clamp01(dying) : 0;
-    const tau = target > this.level ? RISE_SECONDS : FALL_SECONDS;
-    this.level += (target - this.level) * (1 - Math.exp(-Math.max(0, dt) / tau));
-    if (this.level < 0.002 && target === 0) this.level = 0;
+    this.age += Math.max(0, dt);
+    if (!active) {
+      this.age = Infinity;
+      this.level = 0;
+      return;
+    }
+    const d = clamp01(dying);
+    if (this.age >= PULSE_SECONDS && d >= PULSE_TRIGGER) {
+      this.age = 0;
+      this.height = d;
+    } else if (this.age < RISE_SECONDS) {
+      // Still ramping: a worsening scene may raise this pulse, never lower it.
+      this.height = Math.max(this.height, d);
+    }
+    this.level = this.height * pulseShape(this.age);
   }
 }
 
