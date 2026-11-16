@@ -990,7 +990,25 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     strafe *= 1.0 / sqrt_world_size * cfg_global_force_mult(config) / 20.0;
 
     // Accelerate: Apply drag and add force to e.vel.
+    let vel_before = vel;
     vel = vel * cfg_drag(config) + force;
+
+    // COASTING. Drag is applied every sub-step (30 a frame by default), so a
+    // particle at drag 0.5 whose push suddenly vanishes -- it has wandered
+    // into flat, empty trails -- loses nearly all its speed within a frame and
+    // looks as if it hit a wall. When the push has fallen far below what would
+    // sustain the current speed, let it glide instead: it keeps at least
+    // `coast` of its speed per step. Turning is untouched -- a particle whose
+    // push merely changes direction still has a full-sized force.
+    let coast = world_coast(u.world);
+    if (coast > 0.0) {
+        let speed_before = length(vel_before);
+        let sustain = (1.0 - cfg_drag(config)) * speed_before;
+        if (length(force) < COAST_FORCE_FRACTION * sustain
+            && length(vel) < coast * speed_before) {
+            vel = vel_before * coast + force;
+        }
+    }
 
     // Uniform pull on the whole population, in the two MOTION channels: _force
     // feeds velocity (after drag, so drag does not damp it away the same frame),

@@ -185,6 +185,12 @@ export class ParticleSystem {
   physicsSteps: number;
 
   /**
+   * Coasting retention per sub-step (see entityUpdate.wgsl). 0 = off, which is
+   * the default so the sand modality keeps particles that stop where they land.
+   */
+  coast = 0;
+
+  /**
    * The reset sentinel. Zero is watched by all three shaders -- see `reset()`.
    * Read-only outside; only `advance()` and `reset()` write it.
    */
@@ -1011,7 +1017,7 @@ export class ParticleSystem {
    * buffer they index.
    */
   private worldConfig() {
-    return forUpload(this.world, this.sqrtWorldSize, this.slotCount);
+    return { ...forUpload(this.world, this.sqrtWorldSize, this.slotCount), coast: this.coast };
   }
 
   /**

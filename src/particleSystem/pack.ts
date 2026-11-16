@@ -171,6 +171,7 @@ export function packWorldConfig(world: WorldConfig): ArrayBuffer {
 
   // bounds: boundary_conditions(i), yzw reserved (left zero by the allocation)
   i32[WORLD_LANE.bounds + 0] = world.boundaryConditions; // world_boundary_conditions()
+  f32[WORLD_LANE.bounds + 1] = world.coast ?? 0; // world_coast()
 
   return buffer;
 }

@@ -355,6 +355,11 @@ const SENSOR_DISTANCE_SPAN: f32 = 5.0;
 // before the bits run out.
 const MIN_VELOCITY: f32 = 5e-5;
 
+// Coasting engages only when a particle's push has fallen below this fraction
+// of the push that would sustain its current speed: it has lost its signal,
+// not merely turned. See entityUpdate.wgsl.
+const COAST_FORCE_FRACTION: f32 = 0.25;
+
 // ---------------------------------------------------------------------------
 // WorldData -- settings that are properties of the world, not of a particle.
 //
@@ -365,7 +370,7 @@ const MIN_VELOCITY: f32 = 5e-5;
 struct WorldData {
     trail: vec4f,  // x: persistence  y: diffusion  z: sqrt_world_size  w: config_count(i)
     // trail filled up, so this is rule 2's "add a whole new vec4" case.
-    bounds: vec4f, // x: boundary_conditions(i)   yzw: reserved
+    bounds: vec4f, // x: boundary_conditions(i)   y: coast   zw: reserved
 }
 
 fn world_trail_persistence(w: WorldData) -> f32 { return w.trail.x; }
@@ -377,6 +382,11 @@ fn world_config_count(w: WorldData) -> i32      { return bitcast<i32>(w.trail.w)
 // world property rather than a per-config one: the trail field has to obey the
 // same boundary as the particles do, and there is only one trail field.
 fn world_boundary_conditions(w: WorldData) -> i32 { return bitcast<i32>(w.bounds.x); }
+
+// COASTING: the least fraction of its speed a particle keeps per step when its
+// push vanishes. 0 = off (the sand modality, and anything that never sets it).
+// Runtime only, not a saved setting -- see `ParticleSystem.coast`.
+fn world_coast(w: WorldData) -> f32 { return w.bounds.y; }
 
 // ---------------------------------------------------------------------------
 // Entity -- one particle. 32 bytes, 16-byte aligned.

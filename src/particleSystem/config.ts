@@ -83,7 +83,7 @@ export const LANE = {
 /** Float32 lane indices within a `WorldData` record. */
 export const WORLD_LANE = {
   trail: 0, //   x: persistence  y: diffusion  z: sqrt_world_size  w: config_count(i)
-  bounds: 4, //  x: boundary_conditions(i)  yzw: reserved
+  bounds: 4, //  x: boundary_conditions(i)  y: coast (runtime)  zw: reserved
 } as const;
 
 // Checked against the generated descriptor at module load. This is the guard
@@ -351,6 +351,8 @@ export function makeWorldSettings(
 export interface WorldConfig extends WorldSettings {
   readonly sqrtWorldSize: number;
   readonly configCount: number;
+  /** Coasting retention per step (entityUpdate.wgsl); 0 or absent = off. Runtime only. */
+  readonly coast?: number;
 }
 
 /** `WorldSettings` -> `WorldConfig`, joining the runtime sizing. */

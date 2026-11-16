@@ -1022,6 +1022,10 @@ export class Orchestrator implements CommandBus {
     // camera must see the simulation mid-advance rather than only at the end.
     const { steps, schedule, settling } = this.frameSchedule();
     this.system.physicsSteps = steps;
+    // COASTING (Nov 16): a particle whose push vanishes glides to rest instead
+    // of stopping dead. 0.9975 per sub-step: at 30 steps a frame and 60 fps,
+    // about a tenth of its speed remains after ~0.5 s. See entityUpdate.wgsl.
+    this.system.coast = 0.9975;
     const at = sampleAt(schedule);
 
     const config = selectedConfig(this.project);
