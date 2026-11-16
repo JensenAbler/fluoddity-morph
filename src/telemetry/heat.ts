@@ -38,8 +38,20 @@ export const MAX_DECAY_BOOST = 6;
 export const RISE_SECONDS = 0.5;
 /** Seconds per pulse, ramp up and cool-down together; also the minimum gap between pulse starts. */
 export const PULSE_SECONDS = 5;
-/** Dying score at which a pulse fires. Its height is the score itself. */
+/** Dying score at which a pulse fires. Its height is the score times the current gain. */
 export const PULSE_TRIGGER = 0.3;
+
+// ESCALATION (Nov 16): pulses at fixed strength still left ~40 s of dead
+// scene in a 17-minute run. An intervention should be able to bring a scene
+// back when we choose to, so each pulse that ends with the scene still dying
+// makes the next one stronger, until the push reaches its natural limit:
+// sensor jitter of 1.0, which is a fully random heading. A pulse that ends
+// with the scene recovered resets the gain.
+
+/** Gain multiplier applied after each pulse that did not revive the scene. */
+export const ESCALATE = 1.6;
+/** Highest heat: where MAX_ANGLE_JITTER * heat reaches 1.0 (fully random sensing). */
+export const MAX_HEAT = 1 / MAX_ANGLE_JITTER;
 
 const clamp01 = (x: number): number => Math.min(1, Math.max(0, x));
 
@@ -79,8 +91,12 @@ export class Heat {
   level = 0;
   /** Seconds since the current pulse started (Infinity when none has). */
   private age = Infinity;
+  /** Whether the last pulse's outcome has been judged. */
+  private ended = true;
   /** Height of the current pulse. */
   private height = 0;
+  /** Strength multiplier: 1, then x ESCALATE for each pulse that did not revive the scene. */
+  gain = 1;
 
   /** Advance by `dt` seconds. Fires a pulse when `dying` crosses the trigger and the last one is done. */
   step(dt: number, active: boolean, dying: number): void {
@@ -88,15 +104,23 @@ export class Heat {
     if (!active) {
       this.age = Infinity;
       this.level = 0;
+      this.gain = 1;
+      this.ended = true;
       return;
     }
     const d = clamp01(dying);
+    if (this.age >= PULSE_SECONDS && !this.ended) {
+      // A pulse just finished: did it work?
+      this.ended = true;
+      this.gain = d >= PULSE_TRIGGER ? Math.min(this.gain * ESCALATE, MAX_HEAT) : 1;
+    }
     if (this.age >= PULSE_SECONDS && d >= PULSE_TRIGGER) {
       this.age = 0;
-      this.height = d;
+      this.ended = false;
+      this.height = Math.min(d * this.gain, MAX_HEAT);
     } else if (this.age < RISE_SECONDS) {
       // Still ramping: a worsening scene may raise this pulse, never lower it.
-      this.height = Math.max(this.height, d);
+      this.height = Math.max(this.height, Math.min(d * this.gain, MAX_HEAT));
     }
     this.level = this.height * pulseShape(this.age);
   }
@@ -104,11 +128,14 @@ export class Heat {
 
 export function heatConfig(config: SimulationConfig, heat: number): SimulationConfig {
   if (heat <= 0) return config;
-  return { ...config, sensorAngleJitter: config.sensorAngleJitter + heat * MAX_ANGLE_JITTER };
+  return { ...config, sensorAngleJitter: Math.min(1, config.sensorAngleJitter + heat * MAX_ANGLE_JITTER) };
 }
 
 export function heatWorld(world: WorldSettings, heat: number): WorldSettings {
   if (heat <= 0) return world;
-  const decay = (1 - world.trailPersistence) * (1 + heat * MAX_DECAY_BOOST);
+  // Trail fade stops growing at heat 1: past that, a creature with short
+  // trails would lose them altogether every step. Escalation beyond 1 comes
+  // through sensor jitter, whose own limit (fully random) is MAX_HEAT.
+  const decay = (1 - world.trailPersistence) * (1 + Math.min(heat, 1) * MAX_DECAY_BOOST);
   return { ...world, trailPersistence: Math.max(0, 1 - decay) };
 }

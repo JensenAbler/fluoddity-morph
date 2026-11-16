@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Heat, dyingScore, heatConfig, heatWorld, MAX_ANGLE_JITTER, PULSE_SECONDS } from './heat.ts';
+import { Heat, dyingScore, heatConfig, heatWorld, MAX_ANGLE_JITTER, MAX_HEAT, PULSE_SECONDS } from './heat.ts';
 import { SIMULATION_CONFIG_DEFAULTS, type SimulationConfig } from '../particleSystem/config.ts';
 
 const DEFAULT_CONFIG = SIMULATION_CONFIG_DEFAULTS as unknown as SimulationConfig;
@@ -61,6 +61,20 @@ test('pulse height follows how close to dying', () => {
   assert.ok(Math.abs(Math.max(...lv) - 0.4) < 0.02);
 });
 
+test('pulses that fail to revive escalate to fully random sensing; recovery resets', () => {
+  const h = new Heat();
+  const peaks: number[] = [];
+  for (let p = 0; p < 5; p++) peaks.push(Math.max(...run(h, PULSE_SECONDS, true, 1)));
+  for (let i = 1; i < peaks.length; i++) assert.ok(peaks[i]! >= peaks[i - 1]! - 1e-9, `escalating: ${peaks}`);
+  assert.ok(peaks[0]! < 1.01);
+  assert.ok(Math.abs(peaks[peaks.length - 1]! - MAX_HEAT) < 0.02, `reaches the limit: ${peaks}`);
+  assert.equal(heatConfig(DEFAULT_CONFIG, MAX_HEAT).sensorAngleJitter, 1);
+  // The scene recovers: the next pulse is back to normal strength.
+  run(h, PULSE_SECONDS + 1, true, 0);
+  assert.equal(h.gain, 1);
+  assert.ok(Math.max(...run(h, 2, true, 1)) < 1.01);
+});
+
 test('heat touches only jitter and trail fade, and nothing at zero', () => {
   const c = { ...DEFAULT_CONFIG, sensorAngleJitter: 0.1 };
   assert.equal(heatConfig(c, 0), c);
@@ -68,4 +82,5 @@ test('heat touches only jitter and trail fade, and nothing at zero', () => {
   const w = { trailPersistence: 0.99 } as Parameters<typeof heatWorld>[0];
   assert.equal(heatWorld(w, 0), w);
   assert.ok(Math.abs(heatWorld(w, 1).trailPersistence - 0.93) < 1e-9);
+  assert.ok(Math.abs(heatWorld(w, MAX_HEAT).trailPersistence - 0.93) < 1e-9, 'trail fade saturates at heat 1');
 });

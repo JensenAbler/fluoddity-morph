@@ -2342,6 +2342,7 @@ export class Orchestrator implements CommandBus {
               change: temp.pictureChange === undefined ? undefined : r4(temp.pictureChange),
               pspread: temp.particleSpread === undefined ? undefined : r4(temp.particleSpread),
               heat: r4(this.heat.level),
+              hgain: r4(this.heat.gain),
             },
       evolving: this.evolver.running,
       morphing: this.morph.playing,
