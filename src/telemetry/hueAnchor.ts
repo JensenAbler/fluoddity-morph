@@ -5,17 +5,22 @@
  * WHY IT STROBES. Each particle's hue is `colorSensitivity * signal +
  * colorOffset` (in turns). In a dead arrangement every particle carries nearly
  * the same signal, so the screen is one colour; while evolving or morphing,
- * the rule and the sensitivity keep moving, that shared value slides, and the
- * hue wraps -- so the whole picture spins through the rainbow (Jensen, Nov 15:
- * "the intermission in Monty Python and the Holy Grail").
+ * the genes keep moving and that shared hue slides, wrapping round the wheel
+ * (Jensen, Nov 15: "the intermission in Monty Python and the Holy Grail").
  *
- * WHAT IT DOES. The temperature probe reads the average hue several times a
- * second. While the screen is one colour, a display-only offset turns the wheel
- * against that drift, so the shared colour stays put. As colour variety comes
- * back, the offset drifts home -- slowly, and the SHORT way round. Hue is a
- * circle, so only where the offset sits matters, never how many turns it
- * soaked up: it is kept within half a turn of zero at all times, and the trip
- * home is at most half a turn.
+ * PREDICT, DON'T CHASE. The shared hue is `A * s + B`: A the colour
+ * sensitivity, B the colour offset, s the shared signal. A and B are genes the
+ * program sets itself every frame, so their part of the slide is known exactly
+ * and cancelled the same frame -- no lag. Only s, the rule's output, lives on
+ * the GPU: it is measured (the probe's mean signal, four times a second) and
+ * extrapolated between readings. (The first version chased the measured hue
+ * instead, and leaked whenever the genes moved faster than it could see.)
+ *
+ * HOLD, THEN LET GO. While the screen is one colour the anchor keeps the
+ * shown hue at the colour it had when the collapse began. As variety comes
+ * back it drifts home -- slowly, and the SHORT way round: hue is a circle, so
+ * only where the offset sits matters, never how many turns it soaked up. It
+ * is kept within half a turn of zero at all times.
  *
  * Display only: genes, saves and the simulation itself are untouched. Pure.
  */
@@ -26,8 +31,10 @@ export const ONE_COLOUR_SPREAD = 0.08;
 export const VARIED_SPREAD = 0.25;
 /** How fast the offset drifts home once colours are varied: half a turn in 20 s. */
 export const RETURN_TURNS_PER_SECOND = 0.025;
-/** A reading older than this (in the anchor's own seconds) no longer says how fast the hue moves. */
+/** A reading older than this (in the anchor's own seconds) is too old to hold on. */
 const STALE_SECONDS = 2;
+/** Never extrapolate the signal further than this past its last reading. */
+const EXTRAPOLATE_SECONDS = 0.5;
 
 /** Wrap turns into [-0.5, 0.5). */
 export function wrapHalf(turns: number): number {
@@ -40,8 +47,8 @@ function smoothstep(lo: number, hi: number, x: number): number {
 }
 
 export interface HueReading {
-  /** Average hue of the particles BEFORE `colorOffset`, in turns. */
-  readonly meanHue?: number;
+  /** Mean colour signal of the sampled particles (before sensitivity and offset). */
+  readonly meanSignal?: number;
   /** 0 = one colour, 1 = colours all round the wheel. */
   readonly colorSpread?: number;
   /** When the reading was taken; a new value means a new reading. */
@@ -55,42 +62,53 @@ export class HueAnchor {
   hold = 0;
   /** The anchor's own clock: seconds it has been stepped (simulation time, so recordings work). */
   private clock = 0;
-  private lastHue: number | null = null;
-  private lastClock = 0;
+  private signal: number | null = null;
+  private signalAt = 0;
+  private signalRate = 0;
   private lastSampledAt: number | undefined = undefined;
-  /** The shared hue's measured drift, turns per second. */
-  private rate = 0;
   private oneColour = 0;
+  /** The shown hue being held, or null when not holding. */
+  private target: number | null = null;
 
   /** Feed the probe's latest reading. Repeats of the same reading are ignored. */
   observe(r: HueReading): void {
-    if (r.meanHue === undefined || r.colorSpread === undefined) return;
+    if (r.meanSignal === undefined || r.colorSpread === undefined) return;
     if (r.sampledAt !== undefined && r.sampledAt === this.lastSampledAt) return;
     this.lastSampledAt = r.sampledAt;
-    if (this.lastHue !== null && this.clock > this.lastClock) {
-      this.rate = wrapHalf(r.meanHue - this.lastHue) / (this.clock - this.lastClock);
+    if (this.signal !== null && this.clock > this.signalAt) {
+      this.signalRate = (r.meanSignal - this.signal) / (this.clock - this.signalAt);
     }
-    this.lastHue = r.meanHue;
-    this.lastClock = this.clock;
+    this.signal = r.meanSignal;
+    this.signalAt = this.clock;
     this.oneColour = 1 - smoothstep(ONE_COLOUR_SPREAD, VARIED_SPREAD, r.colorSpread);
   }
 
   /**
-   * Advance `dt` seconds. `active`: evolving or morphing -- the only times the
-   * genes move under a collapsed screen. Inactive, the anchor just goes home.
+   * Advance `dt` seconds and return the display offset. `active`: evolving or
+   * morphing -- the only times the genes move under a collapsed screen.
+   * `sensitivity` and `offset` are the colour genes in force THIS frame.
    */
-  step(dt: number, active: boolean): number {
+  step(dt: number, active: boolean, sensitivity: number, colorOffset: number): number {
     this.clock += dt;
-    const fresh = this.clock - this.lastClock <= STALE_SECONDS;
+    const fresh = this.signal !== null && this.clock - this.signalAt <= STALE_SECONDS;
     const hold = active && fresh ? this.oneColour : 0;
     this.hold = hold;
-    // HOLD: turn the wheel against the shared drift, as firmly as the screen is one colour.
-    let off = this.offset - hold * this.rate * dt;
-    // LET GO: drift home the short way, as the colours come back.
-    const home = (1 - hold) * RETURN_TURNS_PER_SECOND * dt;
-    off = wrapHalf(off);
-    off = Math.abs(off) <= home ? 0 : off - Math.sign(off) * home;
-    this.offset = wrapHalf(off);
+    if (hold > 0 && this.signal !== null) {
+      // The shown hue without the anchor: known genes times the extrapolated signal.
+      const ahead = Math.min(this.clock - this.signalAt, EXTRAPOLATE_SECONDS);
+      const s = this.signal + this.signalRate * ahead;
+      const raw = sensitivity * s + colorOffset;
+      this.target ??= wrapHalf(raw + this.offset);
+      // Hold firmly when the screen is one colour; partly when it is nearly so.
+      const wanted = wrapHalf(this.target - raw);
+      this.offset = wrapHalf(this.offset + hold * wrapHalf(wanted - this.offset));
+      return this.offset;
+    }
+    // LET GO: forget the held colour and drift home the short way.
+    this.target = null;
+    const home = RETURN_TURNS_PER_SECOND * dt;
+    const off = wrapHalf(this.offset);
+    this.offset = Math.abs(off) <= home ? 0 : wrapHalf(off - Math.sign(off) * home);
     return this.offset;
   }
 }

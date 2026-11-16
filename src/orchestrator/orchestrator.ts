@@ -965,7 +965,13 @@ export class Orchestrator implements CommandBus {
     }
     if (!this.paused) {
       const dt = this.recorder !== null ? 1 / RECORDING_FPS : Math.min(input.dt, 0.1);
-      this.hueAnchor.step(dt, this.evolver.running || this.morph.playing);
+      const c0 = this.project.configs[0];
+      this.hueAnchor.step(
+        dt,
+        this.evolver.running || this.morph.playing,
+        c0?.colorSensitivity ?? 1,
+        c0?.colorOffset ?? 0,
+      );
     }
     this.telemetry.tick(
       performance.now(),
@@ -2307,6 +2313,7 @@ export class Orchestrator implements CommandBus {
               spread: temp.colorSpread === undefined ? undefined : r4(temp.colorSpread),
               anchor: r4(this.hueAnchor.offset),
               hold: r4(this.hueAnchor.hold),
+              sig: temp.meanSignal === undefined ? undefined : r4(temp.meanSignal),
             },
       evolving: this.evolver.running,
       morphing: this.morph.playing,

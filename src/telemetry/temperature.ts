@@ -48,6 +48,8 @@ export interface Temperature {
   readonly colorSpread?: number;
   /** Average hue of the particles BEFORE `colorOffset`, in turns [0, 1). Absent = unknown. */
   readonly meanHue?: number;
+  /** Plain mean of the particles' colour signal (meaningful when they agree: low spread). */
+  readonly meanSignal?: number;
   /** `performance.now()` of this reading; a new value means a new reading. */
   readonly sampledAt?: number;
 }
@@ -142,6 +144,7 @@ export class TemperatureProbe {
     let cs = 0;
     let sn = 0;
     let nc = 0;
+    let sigSum = 0;
     const turn = 2 * Math.PI * this.hueScale;
     for (let i = 0; i + 3 < f.length; i += 8) {
       const vx = f[i + 2]!;
@@ -153,6 +156,7 @@ export class TemperatureProbe {
       if (c !== undefined && Number.isFinite(c)) {
         cs += Math.cos(turn * c);
         sn += Math.sin(turn * c);
+        sigSum += c;
         nc++;
       }
     }
@@ -177,6 +181,7 @@ export class TemperatureProbe {
       coldFor: this.coldSince === null ? 0 : (nowMs - this.coldSince) / 1000,
       colorSpread,
       meanHue,
+      meanSignal: nc > 0 ? sigSum / nc : undefined,
       sampledAt: nowMs,
     };
   }
