@@ -164,6 +164,7 @@ import { Telemetry, r4 } from '../telemetry/telemetry.ts';
 import { TemperatureProbe } from '../telemetry/temperature.ts';
 import { HueAnchor } from '../telemetry/hueAnchor.ts';
 import { Heat, dyingScore, heatConfig, heatWorld } from '../telemetry/heat.ts';
+import { ReversalGuard, guardConfig } from '../telemetry/reversalGuard.ts';
 import { PictureProbe } from '../telemetry/pictureProbe.ts';
 import { UiUsage } from '../telemetry/uiUsage.ts';
 import { HOME_CATEGORY, SEED_LIKES } from '../evolve/seedPool.ts';
@@ -420,6 +421,9 @@ export class Orchestrator implements CommandBus {
   /** Thermostat against freezing (heat.ts). Physics only; the project never sees it. */
   private readonly heat = new Heat();
   private appliedHeat = 0;
+  /** Route detour around predicted population-wide brakes (reversalGuard.ts). Physics only. */
+  private readonly guard = new ReversalGuard();
+  private appliedGuard = 0;
 
   /**
    * Project state from before a hover-preview began, so a committed load
@@ -987,7 +991,22 @@ export class Orchestrator implements CommandBus {
         this.evolver.running || this.morph.playing,
         dyingScore(temp?.pictureChange, temp?.stuck),
       );
-      if (Math.abs(this.heat.level - this.appliedHeat) > 0.005 || (this.heat.level === 0 && this.appliedHeat !== 0)) {
+      // REVERSAL GUARD (reversalGuard.ts): predict a population-wide brake a
+      // few seconds ahead and bend the rule's route around it.
+      this.guard.update(
+        dt,
+        this.evolver.running || this.morph.playing,
+        this.project.configs[0]?.rule,
+        temp?.meanSignal,
+        temp?.particleSpread,
+      );
+      const guardSize = this.guard.size;
+      if (
+        Math.abs(this.heat.level - this.appliedHeat) > 0.005 ||
+        (this.heat.level === 0 && this.appliedHeat !== 0) ||
+        Math.abs(guardSize - this.appliedGuard) > 0.002 ||
+        (guardSize < 1e-6 && this.appliedGuard !== 0)
+      ) {
         this.applyPhysics(this.project);
       }
     }
@@ -2347,6 +2366,8 @@ export class Orchestrator implements CommandBus {
               pspread: temp.particleSpread === undefined ? undefined : r4(temp.particleSpread),
               heat: r4(this.heat.level),
               hgain: r4(this.heat.gain),
+              guard: r4(this.guard.size),
+              risk: r4(this.guard.risk),
             },
       evolving: this.evolver.running,
       morphing: this.morph.playing,
@@ -2443,11 +2464,13 @@ export class Orchestrator implements CommandBus {
   /** Upload `project` to the physics with the current heat applied (heat.ts). */
   private applyPhysics(project: Project): void {
     const h = this.heat.level;
+    const off = this.guard.offset;
     this.system.applyProject(
-      h > 0 ? project.configs.map((c) => heatConfig(c, h)) : project.configs,
+      project.configs.map((c) => guardConfig(h > 0 ? heatConfig(c, h) : c, off)),
       heatWorld(project.world, h),
     );
     this.appliedHeat = h;
+    this.appliedGuard = this.guard.size < 1e-6 ? 0 : this.guard.size;
   }
 
   /**
