@@ -27,14 +27,68 @@ const BYTES_PER_ENTITY = 32;
  * a hue sampled once a second can lap the wheel unseen. The readback is tiny.
  */
 const INTERVAL_MS = 250;
-/** Below this fraction of the recent peak, the run counts as cold. */
-const COLD_FRACTION = 0.18;
-/** The recent peak decays by half over about this long. */
+/** The recent peak decays by half over about this long (for `relative`, logged only). */
 const PEAK_HALF_LIFE_S = 90;
+
+// ---- DEAD, judged absolutely ------------------------------------------------
+//
+// The speed-vs-recent-peak rule (`relative`) is blind to a creature that
+// ARRIVES dead: it becomes its own baseline and reads warm (Jensen's Nov 15
+// run: the Weave sat frozen ~20 s, half of it rated fully warm). And it misses
+// particles that jiggle in place. So `cold` is now absolute, two ways:
+//
+//  - STUCK (restored from the Oct 28 sensor, commit 00dda33, which a later
+//    commit dropped by accident): each particle's NET travel over about a
+//    second. Below STUCK_SPEED it is stuck, however much it jiggled. Jumps
+//    faster than JUMP_SPEED are wraps or respawns and are ignored.
+//  - ONE COLOUR: the colour spread collapsed. In every freeze looked at on
+//    Nov 15 the screen went one colour. Skipped when the shown sensitivity is
+//    ~0, where every creature is one colour by design.
+
+/** World units per second of net travel below which a particle is stuck. */
+export const STUCK_SPEED = 0.01;
+/** Net travel faster than this (world units/s) is a wrap or respawn: ignored. */
+export const JUMP_SPEED = 0.5;
+/** More than this fraction stuck: dead. */
+export const STUCK_FRACTION = 0.5;
+/** Colour spread at or below this: one colour, dead. */
+export const DEAD_SPREAD = 0.08;
+/** Below this |colorSensitivity| one colour is by design, not death. */
+const MIN_SENSITIVITY = 0.02;
+/** Positions are compared about this far apart, so jiggling nets out. */
+const STUCK_WINDOW_MS = 1000;
+
+/** Fraction of particles whose net travel between two snapshots is stuck; null if none measurable. */
+export function stuckFraction(prev: Float32Array, cur: Float32Array, seconds: number): number | null {
+  if (seconds <= 0) return null;
+  let n = 0;
+  let stuck = 0;
+  const len = Math.min(prev.length, cur.length);
+  for (let i = 0; i + 1 < len; i += 2) {
+    const dx = cur[i]! - prev[i]!;
+    const dy = cur[i + 1]! - prev[i + 1]!;
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) continue;
+    const v = Math.hypot(dx, dy) / seconds;
+    if (v > JUMP_SPEED) continue;
+    n++;
+    if (v < STUCK_SPEED) stuck++;
+  }
+  return n > 0 ? stuck / n : null;
+}
+
+/** The verdict: dead when most particles are stuck, or the screen is one colour. */
+export function isDead(stuck: number | undefined, colorSpread: number | undefined, sensitivity: number): boolean {
+  if (stuck !== undefined && stuck > STUCK_FRACTION) return true;
+  return colorSpread !== undefined && Math.abs(sensitivity) >= MIN_SENSITIVITY && colorSpread <= DEAD_SPREAD;
+}
 
 export interface Temperature {
   readonly speed: number;
+  /** Speed against the recent peak (reset on arrival). Logged only; no longer decides `cold`. */
   readonly relative: number;
+  /** Fraction of particles stuck (net travel over ~1 s). Absent until measured. */
+  readonly stuck?: number;
+  /** Dead: most particles stuck, or one colour (see `isDead`). */
   readonly cold: boolean;
   /** Seconds the run has been continuously cold (0 when warm). */
   readonly coldFor: number;
@@ -67,6 +121,10 @@ export class TemperatureProbe {
   private failed = false;
   /** `colorSensitivity` of what is shown: hue = scale * signal (+ an offset that cancels). */
   private hueScale = 1;
+  /** Particle positions (x, y pairs) from about a second ago, and when. */
+  private prevPos: Float32Array | null = null;
+  private prevPosAt = 0;
+  private stuck: number | undefined = undefined;
 
   constructor(device: GPUDevice) {
     this.device = device;
@@ -82,14 +140,13 @@ export class TemperatureProbe {
   }
 
   /**
-   * Forget the recent peak, as if the run had just begun. Called when the
-   * evolver arrives at a new favorite, so its stillness is judged against its
-   * own motion rather than whatever came before.
+   * Forget the recent peak (for the logged `relative`). Called when the
+   * evolver arrives at a new favorite. Deliberately does NOT clear `cold`: a
+   * favorite arrived at dead is dead now, and Path should hurry on at once.
    */
   freshStart(): void {
     this.peak = 0;
-    this.coldSince = null;
-    this.latest = { ...this.latest, relative: 1, cold: false, coldFor: 0 };
+    this.latest = { ...this.latest, relative: 1 };
   }
 
   /** Called while the frame's encoder is open: queue the copy if one is due. */
@@ -146,7 +203,10 @@ export class TemperatureProbe {
     let nc = 0;
     let sigSum = 0;
     const turn = 2 * Math.PI * this.hueScale;
+    const pos = new Float32Array(Math.floor(f.length / 8) * 2);
     for (let i = 0; i + 3 < f.length; i += 8) {
+      pos[(i / 8) * 2] = f[i]!;
+      pos[(i / 8) * 2 + 1] = f[i + 1]!;
       const vx = f[i + 2]!;
       const vy = f[i + 3]!;
       if (!Number.isFinite(vx) || !Number.isFinite(vy)) continue;
@@ -171,12 +231,23 @@ export class TemperatureProbe {
     this.lastPeakTime = nowMs;
     this.peak = Math.max(speed, this.peak * Math.pow(0.5, dt / PEAK_HALF_LIFE_S));
     const relative = this.peak > 0 ? speed / this.peak : 1;
-    const cold = relative < COLD_FRACTION;
+    // STUCK: compare against positions from about a second ago.
+    if (this.prevPos === null || pos.length !== this.prevPos.length) {
+      this.prevPos = pos;
+      this.prevPosAt = nowMs;
+    } else if (nowMs - this.prevPosAt >= STUCK_WINDOW_MS) {
+      const s = stuckFraction(this.prevPos, pos, (nowMs - this.prevPosAt) / 1000);
+      if (s !== null) this.stuck = s;
+      this.prevPos = pos;
+      this.prevPosAt = nowMs;
+    }
+    const cold = isDead(this.stuck, nc > 0 ? colorSpread : undefined, this.hueScale);
     if (cold) this.coldSince ??= nowMs;
     else this.coldSince = null;
     this.latest = {
       speed,
       relative,
+      stuck: this.stuck,
       cold,
       coldFor: this.coldSince === null ? 0 : (nowMs - this.coldSince) / 1000,
       colorSpread,

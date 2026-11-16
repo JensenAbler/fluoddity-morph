@@ -2314,6 +2314,7 @@ export class Orchestrator implements CommandBus {
               anchor: r4(this.hueAnchor.offset),
               hold: r4(this.hueAnchor.hold),
               sig: temp.meanSignal === undefined ? undefined : r4(temp.meanSignal),
+              stuck: temp.stuck === undefined ? undefined : r4(temp.stuck),
             },
       evolving: this.evolver.running,
       morphing: this.morph.playing,
