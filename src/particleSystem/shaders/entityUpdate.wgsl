@@ -1001,12 +1001,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // `coast` of its speed per step. Turning is untouched -- a particle whose
     // push merely changes direction still has a full-sized force.
     let coast = world_coast(u.world);
+    // A gliding particle lays no trail (Nov 16 experiment): it is coasting on
+    // momentum, not acting, so it should not reinforce the field it lost.
+    var coasting = false;
     if (coast > 0.0) {
         let speed_before = length(vel_before);
         let sustain = (1.0 - cfg_drag(config)) * speed_before;
         if (length(force) < COAST_FORCE_FRACTION * sustain
             && length(vel) < coast * speed_before) {
             vel = vel_before * coast + force;
+            coasting = true;
         }
     }
 
@@ -1145,5 +1149,5 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     // Commit new entity state to buffers, and lay its trail from there.
     entities[index] = make_entity(pos, vel, e_size(e), config_index, col_params);
-    deposit(index, pos, vel, e_size(e), trail_weight);
+    if (!coasting) { deposit(index, pos, vel, e_size(e), trail_weight); }
 }
