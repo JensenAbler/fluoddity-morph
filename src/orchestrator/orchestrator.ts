@@ -163,6 +163,7 @@ import { Evolver } from '../evolve/evolve.ts';
 import { Telemetry, r4 } from '../telemetry/telemetry.ts';
 import { TemperatureProbe } from '../telemetry/temperature.ts';
 import { HueAnchor } from '../telemetry/hueAnchor.ts';
+import { Heat, dyingScore, heatConfig, heatWorld } from '../telemetry/heat.ts';
 import { PictureProbe } from '../telemetry/pictureProbe.ts';
 import { UiUsage } from '../telemetry/uiUsage.ts';
 import { HOME_CATEGORY, SEED_LIKES } from '../evolve/seedPool.ts';
@@ -416,6 +417,9 @@ export class Orchestrator implements CommandBus {
   private seenArrivals = 0;
   /** Holds a one-colour screen's colour still while evolving or morphing (display only). */
   private readonly hueAnchor = new HueAnchor();
+  /** Thermostat against freezing (heat.ts). Physics only; the project never sees it. */
+  private readonly heat = new Heat();
+  private appliedHeat = 0;
 
   /**
    * Project state from before a hover-preview began, so a committed load
@@ -976,6 +980,16 @@ export class Orchestrator implements CommandBus {
         c0?.colorSensitivity ?? 1,
         c0?.colorOffset ?? 0,
       );
+      // HEAT (heat.ts): warm the physics as the picture slows, before it dies.
+      const temp = this.temperatureProbe?.value;
+      this.heat.step(
+        dt,
+        this.evolver.running || this.morph.playing,
+        dyingScore(temp?.pictureChange, temp?.stuck),
+      );
+      if (Math.abs(this.heat.level - this.appliedHeat) > 0.005 || (this.heat.level === 0 && this.appliedHeat !== 0)) {
+        this.applyPhysics(this.project);
+      }
     }
     this.telemetry.tick(
       performance.now(),
@@ -2327,6 +2341,7 @@ export class Orchestrator implements CommandBus {
               stuck: temp.stuck === undefined ? undefined : r4(temp.stuck),
               change: temp.pictureChange === undefined ? undefined : r4(temp.pictureChange),
               pspread: temp.particleSpread === undefined ? undefined : r4(temp.particleSpread),
+              heat: r4(this.heat.level),
             },
       evolving: this.evolver.running,
       morphing: this.morph.playing,
@@ -2389,7 +2404,7 @@ export class Orchestrator implements CommandBus {
     const cohortsBefore = selectedConfig(this.project).cohorts;
 
     this.project = project;
-    this.system.applyProject(project.configs, project.world);
+    this.applyPhysics(project);
 
     if (selectedConfig(project).cohorts !== cohortsBefore) this.clearHighlight();
     // The field samples the world the same way the canvas does, so its wrap mode
@@ -2420,6 +2435,16 @@ export class Orchestrator implements CommandBus {
    * `project.ts`'s mutators return the receiver unchanged when nothing changes,
    * which is what keeps this meaningful.
    */
+  /** Upload `project` to the physics with the current heat applied (heat.ts). */
+  private applyPhysics(project: Project): void {
+    const h = this.heat.level;
+    this.system.applyProject(
+      h > 0 ? project.configs.map((c) => heatConfig(c, h)) : project.configs,
+      heatWorld(project.world, h),
+    );
+    this.appliedHeat = h;
+  }
+
   /**
    * Queue a message for the toast. See `Status.notice`.
    *
