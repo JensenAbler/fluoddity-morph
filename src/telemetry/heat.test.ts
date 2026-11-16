@@ -7,9 +7,12 @@ const DEFAULT_CONFIG = SIMULATION_CONFIG_DEFAULTS as unknown as SimulationConfig
 
 test('a lively picture is not dying; a frozen one is', () => {
   assert.equal(dyingScore(0.4, 0.1), 0);
-  assert.equal(dyingScore(0.2, 1), 0);
+  assert.equal(dyingScore(0.2, 0.3), 0);
   assert.equal(dyingScore(0.05, 1), 1);
-  assert.equal(dyingScore(undefined, 1), 0);
+  assert.equal(dyingScore(undefined, 0.3), 0);
+  // Run 3, 1:26: 85% stuck while a colour flicker kept picture change at 0.32.
+  assert.ok(dyingScore(0.32, 0.85) > 0.6);
+  assert.equal(dyingScore(undefined, 1), 1);
   // Nov 15 run, seconds before the 2:46 freeze: change 0.11, 92% stuck.
   assert.ok(dyingScore(0.106, 0.92) > 0.6);
   // Same slowing with particles still travelling counts for less.

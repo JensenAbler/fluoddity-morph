@@ -31,16 +31,27 @@ export const FALL_SECONDS = 6;
 
 const clamp01 = (x: number): number => Math.min(1, Math.max(0, x));
 
+/** Fraction of particles stuck where warming begins / is full, on its own. */
+export const STUCK_START = 0.6;
+export const STUCK_FULL = 0.95;
+
 /**
- * How close to dying, 0..1. Mostly the picture slowing down; weighted up when
- * the particles are also stuck in place, down when they are still travelling.
- * 0 without a picture reading.
+ * How close to dying, 0..1: the larger of two readings.
+ *
+ * PICTURE SLOWING, weighted up when particles are also stuck.
+ *
+ * STUCK PARTICLES ON THEIR OWN. A frozen population can flip its signal all
+ * at once, which flickers the screen colour; the flicker moves which cells
+ * look lit, so the picture reads "changing" while nothing travels (Nov 15
+ * run 3: 70-100% stuck with picture change 0.12-0.37). Colour cannot fake
+ * particles moving, so stuck counts by itself.
  */
 export function dyingScore(change: number | undefined, stuck: number | undefined): number {
-  if (change === undefined) return 0;
+  const stuckAlone = stuck === undefined ? 0 : clamp01((stuck - STUCK_START) / (STUCK_FULL - STUCK_START));
+  if (change === undefined) return stuckAlone;
   const slowing = clamp01((COOL_START - change) / (COOL_START - COOL_FULL));
   const weight = 0.5 + 0.5 * clamp01(stuck ?? 1);
-  return slowing * weight;
+  return Math.max(slowing * weight, stuckAlone);
 }
 
 export class Heat {
