@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { stuckFraction, isDead } from './temperature.ts';
+import { stuckFraction, isDead, pictureDead } from './temperature.ts';
 
 function particles(n: number, at: (i: number) => [number, number]): Float32Array {
   const out = new Float32Array(n * 2);
@@ -26,4 +26,10 @@ test('dead when most are stuck, or one colour -- unless one colour is by design'
   assert.equal(isDead(0.2, 0.01, 0.3), true, 'one colour');
   assert.equal(isDead(0.2, 0.01, 0), false, 'sensitivity 0: one colour by design');
   assert.equal(isDead(undefined, undefined, 0.3), false, 'unknown is not dead');
+});
+
+test('the picture decides when it has a reading', () => {
+  assert.equal(pictureDead(0.02), true, 'picture still');
+  assert.equal(pictureDead(0.4), false, 'picture moving');
+  assert.equal(pictureDead(undefined), undefined, 'no reading: fall back');
 });

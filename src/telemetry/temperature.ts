@@ -76,7 +76,23 @@ export function stuckFraction(prev: Float32Array, cur: Float32Array, seconds: nu
   return n > 0 ? stuck / n : null;
 }
 
-/** The verdict: dead when most particles are stuck, or the screen is one colour. */
+/**
+ * Picture change (see `pictureProbe.ts`) below this over ~2 s: the picture is
+ * still. Nov 15 recordings: freezes 0.00-0.09, lively stretches 0.13 and up.
+ */
+export const STILL_CHANGE = 0.1;
+
+/**
+ * The verdict from the PICTURE (preferred): dead when its shape has stopped
+ * changing. One colour alone is NOT death on screen -- a lively blue cell
+ * field reads one colour. `undefined` when there is no picture reading yet.
+ */
+export function pictureDead(change: number | undefined): boolean | undefined {
+  if (change === undefined) return undefined;
+  return change < STILL_CHANGE;
+}
+
+/** The FALLBACK verdict from particles, used only without a picture reading. */
 export function isDead(stuck: number | undefined, colorSpread: number | undefined, sensitivity: number): boolean {
   if (stuck !== undefined && stuck > STUCK_FRACTION) return true;
   return colorSpread !== undefined && Math.abs(sensitivity) >= MIN_SENSITIVITY && colorSpread <= DEAD_SPREAD;
@@ -88,6 +104,10 @@ export interface Temperature {
   readonly relative: number;
   /** Fraction of particles stuck (net travel over ~1 s). Absent until measured. */
   readonly stuck?: number;
+  /** Fraction of the picture whose brightness changed over ~1 s (pictureProbe.ts). */
+  readonly pictureChange?: number;
+  /** The particles' own colour spread (logged; `colorSpread` is the picture's when known). */
+  readonly particleSpread?: number;
   /** Dead: most particles stuck, or one colour (see `isDead`). */
   readonly cold: boolean;
   /** Seconds the run has been continuously cold (0 when warm). */
@@ -125,6 +145,12 @@ export class TemperatureProbe {
   private prevPos: Float32Array | null = null;
   private prevPosAt = 0;
   private stuck: number | undefined = undefined;
+  private picture: { change?: number; spread?: number } = {};
+
+  /** The picture probe's latest reading (see `pictureProbe.ts`); it decides `cold` when present. */
+  setPicture(p: { change?: number; spread?: number }): void {
+    this.picture = p;
+  }
 
   constructor(device: GPUDevice) {
     this.device = device;
@@ -241,7 +267,10 @@ export class TemperatureProbe {
       this.prevPos = pos;
       this.prevPosAt = nowMs;
     }
-    const cold = isDead(this.stuck, nc > 0 ? colorSpread : undefined, this.hueScale);
+    // THE PICTURE DECIDES when it can (pictureProbe.ts); particles are the fallback.
+    const pic = this.picture;
+    const fromPicture = pictureDead(pic.change);
+    const cold = fromPicture ?? isDead(this.stuck, nc > 0 ? colorSpread : undefined, this.hueScale);
     if (cold) this.coldSince ??= nowMs;
     else this.coldSince = null;
     this.latest = {
@@ -250,7 +279,10 @@ export class TemperatureProbe {
       stuck: this.stuck,
       cold,
       coldFor: this.coldSince === null ? 0 : (nowMs - this.coldSince) / 1000,
-      colorSpread,
+      // What the eye sees when the picture probe has a reading; else the particles'.
+      colorSpread: pic.spread ?? colorSpread,
+      particleSpread: colorSpread,
+      pictureChange: pic.change,
       meanHue,
       meanSignal: nc > 0 ? sigSum / nc : undefined,
       sampledAt: nowMs,

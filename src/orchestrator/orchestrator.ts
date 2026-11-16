@@ -163,6 +163,7 @@ import { Evolver } from '../evolve/evolve.ts';
 import { Telemetry, r4 } from '../telemetry/telemetry.ts';
 import { TemperatureProbe } from '../telemetry/temperature.ts';
 import { HueAnchor } from '../telemetry/hueAnchor.ts';
+import { PictureProbe } from '../telemetry/pictureProbe.ts';
 import { UiUsage } from '../telemetry/uiUsage.ts';
 import { HOME_CATEGORY, SEED_LIKES } from '../evolve/seedPool.ts';
 import { clearPool, loadPool, savePool } from '../evolve/poolStore.ts';
@@ -410,6 +411,8 @@ export class Orchestrator implements CommandBus {
 
   /** Measured particle motion ("0 kelvin" detector). Built on first frame. */
   private temperatureProbe: TemperatureProbe | null = null;
+  /** Stillness and colour judged from the rendered picture (pictureProbe.ts). */
+  private pictureProbe: PictureProbe | null = null;
   private seenArrivals = 0;
   /** Holds a one-colour screen's colour still while evolving or morphing (display only). */
   private readonly hueAnchor = new HueAnchor();
@@ -961,6 +964,7 @@ export class Orchestrator implements CommandBus {
     // letting the whole picture strobe round the wheel. Display only.
     if (this.temperatureProbe !== null) {
       this.temperatureProbe.setHueScale(this.project.configs[0]?.colorSensitivity ?? 1);
+      this.temperatureProbe.setPicture(this.pictureProbe?.value ?? {});
       this.hueAnchor.observe(this.temperatureProbe.value);
     }
     if (!this.paused) {
@@ -1235,6 +1239,11 @@ export class Orchestrator implements CommandBus {
       this.prefs,
       this.overlayState(),
     );
+    // THE PICTURE, exactly as presented this frame (pictureProbe.ts).
+    if (!this.paused) {
+      this.pictureProbe ??= new PictureProbe(this.device);
+      this.pictureProbe.record(encoder, this.surface.context.getCurrentTexture(), performance.now());
+    }
 
     // 5b. THE RECORDING PASS: the same assembled frame, a second time, into
     // the capture canvas -- reading only the crop box's interior.
@@ -1343,6 +1352,7 @@ export class Orchestrator implements CommandBus {
     this.device.queue.submit([encoder.finish()]);
     afterTimedSubmit();
     this.temperatureProbe.afterSubmit(performance.now());
+    this.pictureProbe?.afterSubmit(performance.now());
 
     // AFTER submit, and it has to be: `mapAsync` may not be called while the
     // encoder that writes the buffer is still open. It resolves on a later
@@ -2315,6 +2325,8 @@ export class Orchestrator implements CommandBus {
               hold: r4(this.hueAnchor.hold),
               sig: temp.meanSignal === undefined ? undefined : r4(temp.meanSignal),
               stuck: temp.stuck === undefined ? undefined : r4(temp.stuck),
+              change: temp.pictureChange === undefined ? undefined : r4(temp.pictureChange),
+              pspread: temp.particleSpread === undefined ? undefined : r4(temp.particleSpread),
             },
       evolving: this.evolver.running,
       morphing: this.morph.playing,

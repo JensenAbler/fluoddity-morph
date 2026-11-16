@@ -79,7 +79,14 @@ export function createSurface(canvas: HTMLCanvasElement, device: GPUDevice): Sur
   }
 
   const format = navigator.gpu.getPreferredCanvasFormat();
-  context.configure({ device, format, alphaMode: 'opaque' });
+  // TEXTURE_BINDING so the picture probe (pictureProbe.ts) can read what is
+  // actually shown.
+  context.configure({
+    device,
+    format,
+    alphaMode: 'opaque',
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+  });
 
   // Cached so the render path never measures per frame -- the same reasoning as
   // the desktop's cached `_size` ("so the render path never syscalls per frame").
