@@ -117,6 +117,7 @@ import {
   SHARE_LINK_WARN_LENGTH,
   SHARED_LINK_NAME,
   buildShareUrl,
+  withEvolveFlag,
   decodeShareText,
 } from '../config/shareLink.ts';
 import {
@@ -1821,7 +1822,11 @@ export class Panel {
               window.location.search,
             ),
           };
-    const url = buildShareUrl(loc, this.bus.projectDocument());
+    // The recipient sees evolve on or off as the sharer had it (`withEvolveFlag`).
+    const url = buildShareUrl(
+      { ...loc, search: withEvolveFlag(loc.search, status.evolve.running) },
+      this.bus.projectDocument(),
+    );
     void copyText(url).then((ok) => {
       this.showShareResult(ok, url);
     });
@@ -1904,7 +1909,14 @@ export class Panel {
       return;
     }
 
-    const url = buildShareUrl(window.location, this.bus.projectDocument());
+    const url = buildShareUrl(
+      {
+        origin: window.location.origin,
+        pathname: window.location.pathname,
+        search: withEvolveFlag(window.location.search, this.bus.status().evolve.running),
+      },
+      this.bus.projectDocument(),
+    );
 
     // CAPACITY IS CHECKED FIRST, because a project too big for a QR is a real
     // and reachable state -- a stamp gives out after two or three configs, far

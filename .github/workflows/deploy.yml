@@ -12,7 +12,9 @@ name: Deploy to GitHub Pages
 
 on:
   push:
-    branches: [All-Web]
+    # A public BACKUP of fluoddity-morph.jensenabler.com (served from Alpha), so
+    # the app stays reachable if Alpha goes down. Every push to main republishes.
+    branches: [main]
   # So the site can be republished without an empty commit.
   workflow_dispatch:
 

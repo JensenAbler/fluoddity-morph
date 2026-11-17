@@ -42,6 +42,7 @@ import {
   SHARE_LINK_WARN_LENGTH,
   ShareLinkError,
   buildShareUrl,
+  withEvolveFlag,
   decodeShareLink,
   decodeShareText,
   encodeShareLink,
@@ -509,4 +510,14 @@ test('every shipped config survives the codec byte for byte', () => {
 
   // Guards against a vacuous pass if `configs/` is ever emptied or moved.
   assert.ok(checked > 20, `expected the shipped library, found ${checked} files`);
+});
+
+test('a share link carries whether evolve was running', () => {
+  assert.equal(withEvolveFlag('', true), '');
+  assert.equal(withEvolveFlag('', false), '?noevolve');
+  assert.equal(withEvolveFlag('?noevolve', true), '');
+  assert.equal(withEvolveFlag('?noevolve', false), '?noevolve');
+  assert.equal(withEvolveFlag('?name=Gloop', false), '?name=Gloop&noevolve');
+  assert.equal(withEvolveFlag('?noevolve&name=Gloop', true), '?name=Gloop');
+  assert.ok(new URLSearchParams(withEvolveFlag('?name=Gloop', false)).has('noevolve'));
 });

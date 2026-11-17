@@ -376,6 +376,23 @@ export function decodeShareText(text: string): unknown | null {
  * wrong: someone sharing from `?debug` or `?nopanel` would hand out a link that
  * shows the recipient something different from what they were looking at.
  */
+/**
+ * Carry whether evolve was running into a share link's query string.
+ *
+ * The page evolves on open unless `?noevolve` is present (main.ts), so a link
+ * shared from a still scene must add it, and one shared while evolving must
+ * drop any `noevolve` the sharer's own URL happened to carry. Every other
+ * parameter is left alone, for the reason `buildShareUrl` keeps the query.
+ */
+export function withEvolveFlag(search: string, evolving: boolean): string {
+  const params = new URLSearchParams(search);
+  if (evolving) params.delete('noevolve');
+  else params.set('noevolve', '');
+  // `noevolve` is a bare flag: write it without the trailing `=`.
+  const q = params.toString().replace(/(^|&)noevolve=(?=&|$)/, '$1noevolve');
+  return q === '' ? '' : `?${q}`;
+}
+
 export function buildShareUrl(
   loc: { readonly origin: string; readonly pathname: string; readonly search: string },
   document: unknown,
