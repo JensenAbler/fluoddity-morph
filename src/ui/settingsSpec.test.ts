@@ -117,6 +117,8 @@ test('the registry has the same 35 entries the desktop does, plus the web-only o
   // quietly converted it into "the registry has however many it has", which
   // catches nothing. A setting with no desktop counterpart goes in the list.
   const WEB_ONLY = [
+    // No desktop equivalent: particles there stop when their push vanishes.
+    'glide',
     // No desktop equivalent: the desktop has no cohort highlight and no
     // click-to-select reset to govern.
     'resetOnBehaviorChange',

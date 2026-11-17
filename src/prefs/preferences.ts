@@ -130,6 +130,12 @@ export interface Preferences {
    */
   readonly showPhysicsSlider: boolean;
 
+  /**
+   * GLIDE: a particle that loses its push glides to rest (and lays no trail
+   * while gliding) instead of stopping dead. See entityUpdate.wgsl. On by default.
+   */
+  readonly glide: boolean;
+
   readonly bloomEnabled: boolean;
   /** Brightness cutoff for bloom extraction. Lower glows more widely. */
   readonly bloomThreshold: number;
@@ -398,6 +404,7 @@ export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
   // panels start hidden. Folding it to a button, or hiding it outright, are
   // both things they can then choose. See the interface.
   showPhysicsSlider: true,
+  glide: true,
   bloomEnabled: true,
   bloomThreshold: 0.2,
   bloomIntensity: 0.1,
@@ -463,6 +470,7 @@ export const PREFERENCE_KINDS = {
   showFpsCounter: 'bool',
   physicsSliderOpen: 'bool',
   showPhysicsSlider: 'bool',
+  glide: 'bool',
   bloomEnabled: 'bool',
   bloomThreshold: 'float',
   bloomIntensity: 'float',

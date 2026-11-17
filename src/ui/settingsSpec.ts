@@ -759,6 +759,17 @@ export const SETTINGS: readonly Setting[] = [
       'frame. Higher values run the simulation faster.',
     group: 'Simulation',
   }),
+  setting({
+    field: 'glide',
+    label: 'Glide',
+    tier: BASIC,
+    source: PREFS,
+    kind: BOOL,
+    help:
+      'A particle that loses its push glides to rest instead of stopping dead, ' +
+      'and lays no trail while gliding.',
+    group: 'Simulation',
+  }),
 
   // ================= PREFERENCES: Display =================
   setting({

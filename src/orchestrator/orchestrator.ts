@@ -1044,7 +1044,7 @@ export class Orchestrator implements CommandBus {
     // COASTING (Nov 16): a particle whose push vanishes glides to rest instead
     // of stopping dead. 0.9975 per sub-step: at 30 steps a frame and 60 fps,
     // about a tenth of its speed remains after ~0.5 s. See entityUpdate.wgsl.
-    this.system.coast = 0.9975;
+    this.system.coast = this.prefs.glide ? 0.9975 : 0;
     const at = sampleAt(schedule);
 
     const config = selectedConfig(this.project);
