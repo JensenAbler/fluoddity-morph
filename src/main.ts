@@ -1070,6 +1070,9 @@ async function start(): Promise<void> {
       : recorder !== null
         ? 1 / RECORDING_FPS
         : elapsed / 1000;
+    // Telemetry's frame rate. Not the first frame (its interval is load time)
+    // and not while exporting, which runs slow on purpose.
+    if (!firstFrame && recorder === null) orchestrator.noteFrameInterval(elapsed);
     firstFrame = false;
 
     // BEFORE the freeze, so a long press that came due this frame is acted on

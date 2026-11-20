@@ -2329,6 +2329,53 @@ export class Orchestrator implements CommandBus {
   }
 
   /**
+   * Frame intervals since the last telemetry snapshot, for the `perf` block.
+   *
+   * Jensen saw 60 fps on load sink a few seconds later (Nov 20) and the log had
+   * no frame rate in it, so there was nothing to line the drop up against.
+   * This accumulates every real frame between samples -- a mean over the whole
+   * interval plus the worst frame, not one instant -- so a sample says how the
+   * last couple of seconds actually felt.
+   */
+  private perfFrames = 0;
+  private perfTotalMs = 0;
+  private perfMaxMs = 0;
+  private perfSlowFrames = 0;
+
+  /**
+   * One frame interval from `main.ts`'s loop. Gaps of half a second or more are
+   * a backgrounded tab or a stall, not a frame rate, and are left out -- the
+   * same guard the FPS badge uses.
+   */
+  noteFrameInterval(ms: number): void {
+    if (!(ms > 0) || ms >= 500) return;
+    this.perfFrames++;
+    this.perfTotalMs += ms;
+    if (ms > this.perfMaxMs) this.perfMaxMs = ms;
+    // Slower than 30 fps: a frame a viewer would feel as a hitch.
+    if (ms > 1000 / 30) this.perfSlowFrames++;
+  }
+
+  /** The `perf` block for a snapshot; resets the accumulator for the next one. */
+  private takePerf(): Record<string, unknown> {
+    const perf: Record<string, unknown> = {
+      fps: this.perfFrames > 0 ? Math.round((10000 * this.perfFrames) / this.perfTotalMs) / 10 : undefined,
+      maxMs: this.perfFrames > 0 ? Math.round(this.perfMaxMs * 10) / 10 : undefined,
+      slow: this.perfSlowFrames,
+      frames: this.perfFrames,
+      particles: this.system.entityCount,
+      steps: this.system.physicsSteps,
+      canvas: this.system.canvasSize,
+      worldSize: this.prefs.worldSize,
+    };
+    this.perfFrames = 0;
+    this.perfTotalMs = 0;
+    this.perfMaxMs = 0;
+    this.perfSlowFrames = 0;
+    return perf;
+  }
+
+  /**
    * Everything the log needs to tie a moment to its parameters: the live
    * config's settings and rule, the world, and where the evolver is.
    */
@@ -2350,6 +2397,7 @@ export class Orchestrator implements CommandBus {
     return {
       name: this.project.name,
       paused: this.paused,
+      perf: this.takePerf(),
       temp:
         temp === undefined
           ? undefined
