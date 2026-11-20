@@ -194,6 +194,27 @@ import { type PresetCatalog, loadSavedInto, switchPreset } from './projectComman
  * and morph playback first -- see `dispatch`. Preview commands are included:
  * on touch a tap IS the load.
  */
+/**
+ * A diagnostics toggle (Evolve tab), remembered per browser so it survives the
+ * reloads a before/after comparison needs. On unless explicitly turned off;
+ * anywhere storage is unavailable it is simply on.
+ */
+function readToggle(key: string): boolean {
+  try {
+    return localStorage.getItem(key) !== '0';
+  } catch {
+    return true;
+  }
+}
+
+function writeToggle(key: string, on: boolean): void {
+  try {
+    localStorage.setItem(key, on ? '1' : '0');
+  } catch {
+    /* not remembered; the toggle still applies to this session */
+  }
+}
+
 /** How long a GPU readback may take before baking is abandoned. */
 const DERIVER_TIMEOUT_MS = 5000;
 
@@ -424,6 +445,14 @@ export class Orchestrator implements CommandBus {
   /** Route detour around predicted population-wide brakes (reversalGuard.ts). Physics only. */
   private readonly guard = new ReversalGuard();
   private appliedGuard = 0;
+  /**
+   * DIAGNOSTICS TOGGLES (Evolve tab, Nov 20). Heat: the dying-scene pulses
+   * above. Probes: the temperature and picture readbacks, which also feed
+   * stillness sensing, heat and the hue anchor -- so with probes off those go
+   * quiet too. Both exist to isolate a frame-rate drop on Jensen's iPhone.
+   */
+  private heatEnabled = readToggle('fm-heat');
+  private probesEnabled = readToggle('fm-probes');
 
   /**
    * Project state from before a hover-preview began, so a committed load
@@ -988,7 +1017,7 @@ export class Orchestrator implements CommandBus {
       const temp = this.temperatureProbe?.value;
       this.heat.step(
         dt,
-        this.evolver.running || this.morph.playing,
+        (this.evolver.running || this.morph.playing) && this.heatEnabled,
         dyingScore(temp?.pictureChange, temp?.stuck),
       );
       // REVERSAL GUARD (reversalGuard.ts): predict a population-wide brake a
@@ -1257,7 +1286,7 @@ export class Orchestrator implements CommandBus {
     // TEMPERATURE: a small sampled readback of particle velocities, once a
     // second, so the evolver and the log know when the run has gone still.
     this.temperatureProbe ??= new TemperatureProbe(this.device);
-    if (!this.paused) {
+    if (!this.paused && this.probesEnabled) {
       this.temperatureProbe.record(encoder, this.system.entityBufferForSand(), performance.now());
     }
 
@@ -1277,7 +1306,7 @@ export class Orchestrator implements CommandBus {
       this.overlayState(),
     );
     // THE PICTURE, exactly as presented this frame (pictureProbe.ts).
-    if (!this.paused) {
+    if (!this.paused && this.probesEnabled) {
       this.pictureProbe ??= new PictureProbe(this.device);
       this.pictureProbe.record(encoder, this.surface.context.getCurrentTexture(), performance.now());
     }
@@ -2367,6 +2396,8 @@ export class Orchestrator implements CommandBus {
       steps: this.system.physicsSteps,
       canvas: this.system.canvasSize,
       worldSize: this.prefs.worldSize,
+      heatOn: this.heatEnabled,
+      probesOn: this.probesEnabled,
     };
     this.perfFrames = 0;
     this.perfTotalMs = 0;
@@ -3528,6 +3559,31 @@ export class Orchestrator implements CommandBus {
         return;
       }
 
+      case 'setDiagnostics': {
+        if (command.heat !== undefined && command.heat !== this.heatEnabled) {
+          this.heatEnabled = command.heat;
+          writeToggle('fm-heat', command.heat);
+          this.notify(command.heat ? 'Heat pulses on' : 'Heat pulses off');
+        }
+        if (command.probes !== undefined && command.probes !== this.probesEnabled) {
+          this.probesEnabled = command.probes;
+          writeToggle('fm-probes', command.probes);
+          if (!command.probes) {
+            // Forget the last readings, so nothing keeps acting on a stale one
+            // (a frozen 'cold' would otherwise hurry the evolver forever).
+            this.temperatureProbe = new TemperatureProbe(this.device);
+            this.pictureProbe = null;
+          }
+          this.notify(
+            command.probes
+              ? 'Readback probes on'
+              : 'Readback probes off -- stillness sensing, heat and the hue anchor go quiet',
+          );
+        }
+        this.telemetry.event('diagnostics', { heat: this.heatEnabled, probes: this.probesEnabled });
+        return;
+      }
+
       case 'logMark': {
         const note = command.note?.trim().slice(0, 500);
         this.telemetry.mark(command.mark, note, this.snapshot());
@@ -4160,6 +4216,7 @@ export class Orchestrator implements CommandBus {
         rate: this.drift.rate,
         scale: selectedConfig(this.project).mutationScale,
       },
+      diagnostics: { heat: this.heatEnabled, probes: this.probesEnabled },
       canRevert: this.configOrigin !== null,
       canSave: this.store.writable,
 

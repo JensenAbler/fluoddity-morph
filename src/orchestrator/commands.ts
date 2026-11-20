@@ -541,6 +541,11 @@ export type Command =
    * sent alone: `rate` retunes, `running` starts or stops.
    */
   | { readonly kind: 'mutationDrift'; readonly running?: boolean; readonly rate?: number }
+  /**
+   * Diagnostics toggles (Evolve tab): heat pulses, and the temperature and
+   * picture readback probes. Either may be sent alone. Remembered per browser.
+   */
+  | { readonly kind: 'setDiagnostics'; readonly heat?: boolean; readonly probes?: boolean }
   /** 👍 / 👎 / 📝: log a verdict on what is on screen, with a full snapshot. */
   | { readonly kind: 'logMark'; readonly mark: 'up' | 'down' | 'note'; readonly note?: string };
 
@@ -786,6 +791,8 @@ export interface Status {
   readonly evolve: EvolveView;
   /** Unbounded mutation drift, for the Evolve tab. `scale` is the live Mutation Scale. */
   readonly mutationDrift: { readonly running: boolean; readonly rate: number; readonly scale: number };
+  /** Diagnostics toggles, for the Evolve tab. */
+  readonly diagnostics: { readonly heat: boolean; readonly probes: boolean };
   /**
    * Whether the project has a storage origin to revert to.
    *

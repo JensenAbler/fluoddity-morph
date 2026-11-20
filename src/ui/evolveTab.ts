@@ -90,6 +90,8 @@ export class EvolveTab {
   private readonly driftRateValue: HTMLElement;
   private readonly driftScale: HTMLElement;
   private rows = new Map<number, HTMLElement>();
+  private readonly heatBox: HTMLInputElement;
+  private readonly probesBox: HTMLInputElement;
 
   constructor(host: HTMLElement, send: (command: Command) => void, mobile: boolean) {
     this.send = send;
@@ -281,7 +283,44 @@ export class EvolveTab {
     this.list.style.cssText = 'margin-top:4px;';
     pool.append(poolHead, this.list);
 
-    host.append(this.status, transport, marks, drift, speeds, leash, pool);
+    // --- diagnostics: switch background machinery off to see what it costs ---
+    const diag = document.createElement('div');
+    diag.style.cssText = SECTION;
+    const diagTitle = document.createElement('b');
+    diagTitle.textContent = 'Diagnostics';
+    const diagRow = document.createElement('div');
+    diagRow.style.cssText = 'display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:4px;';
+    const toggle = (
+      text: string,
+      title: string,
+      onChange: (on: boolean) => void,
+    ): { label: HTMLLabelElement; box: HTMLInputElement } => {
+      const label = document.createElement('label');
+      label.style.cssText = 'display:flex;align-items:center;gap:4px;cursor:pointer;' + MUTED;
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.style.cssText = 'accent-color:#8ab4f8;';
+      box.addEventListener('change', () => onChange(box.checked));
+      label.append(box, document.createTextNode(text));
+      label.title = title;
+      return { label, box };
+    };
+    const heat = toggle(
+      'heat pulses',
+      'Warm the physics in short pulses when the scene looks like it is dying (sensor jitter + faster trail fade). Remembered on this device.',
+      (on) => send({ kind: 'setDiagnostics', heat: on }),
+    );
+    const probes = toggle(
+      'readback probes',
+      'Copy particle speeds and a small picture grid back from the GPU four times a second. Off also silences stillness sensing, heat and the hue anchor, which depend on them. Remembered on this device.',
+      (on) => send({ kind: 'setDiagnostics', probes: on }),
+    );
+    this.heatBox = heat.box;
+    this.probesBox = probes.box;
+    diagRow.append(heat.label, probes.label);
+    diag.append(diagTitle, diagRow);
+
+    host.append(this.status, transport, marks, drift, speeds, leash, diag, pool);
     if (mobile) host.style.fontSize = '14px';
   }
 
@@ -440,6 +479,9 @@ export class EvolveTab {
     }
 
     this.drawChart(ev.ranks, ev.progress);
+
+    if (document.activeElement !== this.heatBox) this.heatBox.checked = status.diagnostics.heat;
+    if (document.activeElement !== this.probesBox) this.probesBox.checked = status.diagnostics.probes;
 
     const md = status.mutationDrift;
     const driftRunning = md.running ? '1' : '0';
