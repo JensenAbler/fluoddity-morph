@@ -216,8 +216,11 @@ async function start(): Promise<void> {
   // THE CAMERA, made once for the session and handed to both halves below:
   // the Orchestrator runs its GPU passes, the panel's Camera tab drives it.
   // Making it costs four small shader compiles and five 256-square textures --
-  // NOT the camera, which opens only when someone presses Start.
+  // The camera opens at page load (Jensen, Nov 20 2026); `?nocamera` for a
+  // camera-free start. Not awaited: the permission prompt must not hold up
+  // the first frame.
   const webcam = await Webcam.create(device, STUDIO_CAMERA_STORAGE_KEY);
+  if (!params.has('nocamera')) void webcam.start();
 
   const orchestrator = await Orchestrator.create({
     device,

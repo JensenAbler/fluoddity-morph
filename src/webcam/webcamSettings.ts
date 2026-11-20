@@ -15,10 +15,10 @@
  * sand keep separate entries for the same reason they keep separate
  * `Preferences` records.
  *
- * **THE CAMERA ITSELF NEVER PERSISTS AS ON.** Only the setup does. Starting a
- * camera raises a permission prompt and lights an indicator, and doing either
- * because a page was reloaded is not something anyone asked for -- so `running`
- * is not a field here at all, and every session starts with the camera off.
+ * **THE CAMERA ITSELF DOES NOT PERSIST.** Only the setup does -- `running` is
+ * not a field here. The studio opens the camera at page load (Jensen, Nov 20
+ * 2026; `?nocamera` opts out, see `main.ts`), so a permission prompt on first
+ * visit is expected; Stop lasts until the next reload.
  */
 
 /**
@@ -166,7 +166,8 @@ export const DEFAULT_WEBCAM_SETTINGS: WebcamSettings = Object.freeze({
   facing: 'user',
   mirror: true,
   preview: true,
-  motionPlaysEvolve: false,
+  // On by default (Jensen, Nov 20 2026).
+  motionPlaysEvolve: true,
   motionSensitivity: 0.5,
 });
 
@@ -353,15 +354,15 @@ export function saveWebcamSettings(
 /**
  * Whether the studio's Camera tab was left showing.
  *
- * FALSE on every failure path, matching `loadExportVideoShown`: an optional tab
- * that cannot prove it was wanted should not appear.
+ * TRUE unless it was explicitly hidden. The camera opens at page load now, so
+ * its tab -- the way to see and stop it -- shows by default.
  */
 export function loadCameraShown(storage: Readable | null = browserStorageOrNull()): boolean {
-  if (storage === null) return false;
+  if (storage === null) return true;
   try {
-    return storage.getItem(CAMERA_SHOWN_STORAGE_KEY) === 'true';
+    return storage.getItem(CAMERA_SHOWN_STORAGE_KEY) !== 'false';
   } catch {
-    return false;
+    return true;
   }
 }
 

@@ -134,16 +134,16 @@ test('switching cameras puts the mirror back to that camera’s default', () => 
   assert.equal(withFacing(backOverridden, 'environment'), backOverridden, 'same facing is a no-op');
 });
 
-test('the camera tab defaults to hidden on every failure path', () => {
-  assert.equal(loadCameraShown(null), false);
-  assert.equal(loadCameraShown(fakeStorage()), false);
+test('the camera tab defaults to shown unless explicitly hidden', () => {
+  assert.equal(loadCameraShown(null), true);
+  assert.equal(loadCameraShown(fakeStorage()), true);
   assert.equal(
     loadCameraShown({
       getItem: () => {
         throw new Error('denied');
       },
     }),
-    false,
+    true,
   );
   const storage = fakeStorage();
   saveCameraShown(true, storage);

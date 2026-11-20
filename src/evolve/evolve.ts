@@ -315,7 +315,8 @@ export interface EvolveSettings {
 }
 
 export const DEFAULT_SETTINGS: EvolveSettings = {
-  motion: 'breathe',
+  // Path by default (Jensen, Nov 20 2026), was Breathe.
+  motion: 'path',
   // Quick enough to SEE on first press: the rule genes (glacial in the layered
   // arrangement) take ~25s to reach a favorite rather than over a minute.
   minSeconds: 3,
