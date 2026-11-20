@@ -34,6 +34,7 @@
  */
 
 import { type CameraStrengths, NO_CAMERA } from '../particleSystem/uniforms.ts';
+import { MotionMeter, rateFor } from './motionMeter.ts';
 import { WebcamField } from './webcamField.ts';
 import { type WebcamState, WebcamSource } from './webcamSource.ts';
 import {
@@ -42,8 +43,14 @@ import {
   loadWebcamSettings,
   sanitizeWebcamSettings,
   saveWebcamSettings,
+  isMotionMapping,
   withFacing,
 } from './webcamSettings.ts';
+
+/** Seconds for Evolve's play rate to rise to new motion. Quick: a wave answers. */
+const EVOLVE_ATTACK = 0.15;
+/** Seconds for it to settle once the motion stops: an ease, not a jolt. */
+const EVOLVE_RELEASE = 0.6;
 
 export class Webcam {
   private readonly device: GPUDevice;
@@ -69,6 +76,11 @@ export class Webcam {
    * Cleared by the user's own Stop, so a camera they turned off stays off.
    */
   private suspended = false;
+
+  /** CPU motion amount for "Motion plays Evolve". See `motionMeter.ts`. */
+  private readonly meter = new MotionMeter();
+  /** Evolve's smoothed play rate, 0..1. */
+  private evolveRate = 0;
 
   private constructor(device: GPUDevice, field: WebcamField, storageKey: string) {
     this.device = device;
@@ -174,6 +186,34 @@ export class Webcam {
     else this.stop();
   }
 
+  /** "Motion plays Evolve" is on and can act: camera running on a motion mapping. */
+  get motionDrivesEvolve(): boolean {
+    const s = this._settings;
+    return s.motionPlaysEvolve && isMotionMapping(s.mapping) && this.running;
+  }
+
+  /** The latest fraction of the picture that moved, 0..1 (only while metering). */
+  get motionFraction(): number {
+    return this.meter.fraction;
+  }
+
+  /**
+   * How fast Evolve should run this frame, 0..1, or null when motion is not in
+   * charge (option off, camera off, or a non-motion mapping) and Evolve should
+   * run at its own pace. Smoothed: rises fast, eases down.
+   */
+  stepEvolveRate(dt: number): number | null {
+    if (!this.motionDrivesEvolve) {
+      this.evolveRate = 0;
+      return null;
+    }
+    const target = rateFor(this.meter.fraction, this._settings.motionSensitivity);
+    const tau = target > this.evolveRate ? EVOLVE_ATTACK : EVOLVE_RELEASE;
+    this.evolveRate += (target - this.evolveRate) * (1 - Math.exp(-dt / tau));
+    if (this.evolveRate < 0.002) this.evolveRate = 0;
+    return this.evolveRate;
+  }
+
   /** What the particle system should multiply the field by this frame. */
   strengths(): CameraStrengths {
     return this.running ? cameraStrengths(this._settings, true) : NO_CAMERA;
@@ -239,7 +279,9 @@ export class Webcam {
         // A new stream's first frame: forget the old one's before reading it.
         this.field.clear(encoder);
         this.clearPending = false;
+        this.meter.reset();
       }
+      if (this.motionDrivesEvolve) this.meter.sample(source.video, performance.now() / 1000);
       if (this.field.ingest(encoder, source.video, size, aspect, this._settings)) {
         this.remapPending = false;
         changed = true;

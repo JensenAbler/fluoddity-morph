@@ -138,6 +138,14 @@ export interface WebcamSettings {
   readonly mirror: boolean;
   /** Show the field thumbnail in the Camera tab. */
   readonly preview: boolean;
+  /**
+   * Motion mappings only, studio only: Evolve's clock runs only while the
+   * camera sees motion -- a still room holds the evolution where it is, a
+   * moving one plays it forward. See `motionMeter.ts`.
+   */
+  readonly motionPlaysEvolve: boolean;
+  /** 0..1: how little motion it takes to play Evolve at full speed. */
+  readonly motionSensitivity: number;
 }
 
 export const MAX_CAMERA_GAIN = 8;
@@ -158,7 +166,14 @@ export const DEFAULT_WEBCAM_SETTINGS: WebcamSettings = Object.freeze({
   facing: 'user',
   mirror: true,
   preview: true,
+  motionPlaysEvolve: false,
+  motionSensitivity: 0.5,
 });
+
+/** Whether a mapping reads motion (and so can drive Evolve). */
+export function isMotionMapping(mapping: CameraMapping): boolean {
+  return mapping === 'motion' || mapping === 'motionGravity';
+}
 
 /** The mirror default for a facing. See `WebcamSettings.mirror`. */
 export function mirrorDefaultFor(facing: CameraFacing): boolean {
@@ -316,6 +331,8 @@ export function sanitizeWebcamSettings(record: Record<string, unknown>): WebcamS
     // field would come back mirrored.
     mirror: bool('mirror', mirrorDefaultFor(facing)),
     preview: bool('preview', d.preview),
+    motionPlaysEvolve: bool('motionPlaysEvolve', d.motionPlaysEvolve),
+    motionSensitivity: num('motionSensitivity', 0, 1, d.motionSensitivity),
   });
 }
 

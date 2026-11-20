@@ -64,6 +64,8 @@ test('a saved setup round-trips', () => {
     facing: 'environment',
     mirror: true,
     preview: false,
+    motionPlaysEvolve: true,
+    motionSensitivity: 0.7,
   } as const);
   saveWebcamSettings(settings, 'k', storage);
   assert.deepEqual(loadWebcamSettings('k', storage), settings);

@@ -42,6 +42,7 @@ import {
   MAX_CAMERA_GAIN,
   MAX_CAMERA_FALLOFF,
   MAX_CAMERA_FADE,
+  isMotionMapping,
 } from '../../webcam/webcamSettings.ts';
 import type { SectionContext, SectionHandle } from './section.ts';
 
@@ -84,6 +85,8 @@ export function buildCameraControls(
   webcam: Webcam,
   help: AttachHelp,
   notice?: CameraNotice,
+  /** Offer "Motion plays Evolve". The studio only: sand has no Evolve. */
+  evolveControls = false,
 ): CameraControlsHandle {
   // Every binding reads from this one mirror, refreshed from the Webcam each
   // frame. `refreshing` is what tells a change event the USER made apart from
@@ -214,6 +217,29 @@ export function buildCameraControls(
       'pull eases off instead of cutting out. 0 cuts off at once.',
     (v: number) => webcam.update({ fade: v }),
   );
+  // Shown only under a motion mapping, and only in the studio -- see refresh.
+  const evolveBlades: HTMLElement[] = [];
+  if (evolveControls) {
+    evolveBlades.push(
+      bind(
+        'motionPlaysEvolve',
+        { label: 'Motion Plays Evolve' },
+        'Motion Plays Evolve',
+        'While Evolve is on, it only moves forward when the camera sees ' +
+          'motion -- faster the more is moving. A still room holds the ' +
+          'evolution where it is.',
+        (v: boolean) => webcam.update({ motionPlaysEvolve: v }),
+      ),
+      bind(
+        'motionSensitivity',
+        { label: 'Sensitivity', min: 0, max: 1, step: 0.01 },
+        'Sensitivity',
+        'How little motion it takes to play Evolve at full speed. Higher ' +
+          'answers to a small gesture; lower needs the whole body.',
+        (v: number) => webcam.update({ motionSensitivity: v }),
+      ),
+    );
+  }
   const previewToggle = bind(
     'preview',
     { label: 'Show Field' },
@@ -296,6 +322,11 @@ export function buildCameraControls(
     const falloffDisplay = s.mapping === 'motionGravity' ? '' : 'none';
     if (falloffBlade.style.display !== falloffDisplay) falloffBlade.style.display = falloffDisplay;
     if (fadeBlade.style.display !== falloffDisplay) fadeBlade.style.display = falloffDisplay;
+    const motionDisplay = isMotionMapping(s.mapping) ? '' : 'none';
+    evolveBlades.forEach((el, i) => {
+      const d = i === 0 || s.motionPlaysEvolve ? motionDisplay : 'none';
+      if (el.style.display !== d) el.style.display = d;
+    });
     let moved = false;
     for (const key of Object.keys(proxy) as Key[]) {
       if (proxy[key] !== s[key]) {
@@ -322,7 +353,9 @@ export function buildCameraControls(
         : state === 'starting'
           ? 'Waiting for the camera — your browser may ask for permission.'
           : state === 'on'
-            ? 'Camera on.'
+            ? webcam.motionDrivesEvolve
+              ? `Camera on. Motion ${String(Math.round(webcam.motionFraction * 100))}%.`
+              : 'Camera on.'
             : 'Camera off. Nothing here is saved with projects.';
     if (status.textContent !== text) status.textContent = text;
 
@@ -372,6 +405,7 @@ export function buildCameraSection(
       action: 'Click here to enable them',
       onClick: opts.onSetupForCamera,
     },
+    true,
   );
   return {
     bindings: [],

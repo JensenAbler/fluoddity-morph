@@ -405,6 +405,8 @@ export class Orchestrator implements CommandBus {
    * The pool persists in localStorage; everything else is session state.
    */
   private readonly evolver = new Evolver();
+  /** Evolve's motion-driven play rate last frame; null = motion not in charge. */
+  private lastMotionRate: number | null = null;
   /**
    * Unbounded mutation drift: the hand on the Mutation Scale slider, automated
    * and never stopping. Mutation is a FIXED random direction per cohort (seeded
@@ -974,8 +976,14 @@ export class Orchestrator implements CommandBus {
       const next = this.morph.advance(dt);
       if (next !== null && next !== this.project) this.setProject(next);
     }
-    if (this.evolver.running && !this.paused) {
-      const dt = this.recorder !== null ? 1 / RECORDING_FPS : Math.min(input.dt, 0.1);
+    // MOTION PLAYS EVOLVE (Camera tab): with a motion mapping and the option
+    // on, Evolve's clock runs only while the camera sees motion -- a still room
+    // holds the evolution where it is. Null = motion is not in charge.
+    const frameDt = this.recorder !== null ? 1 / RECORDING_FPS : Math.min(input.dt, 0.1);
+    const motionRate = this.paused ? null : (this.webcam?.stepEvolveRate(frameDt) ?? null);
+    this.lastMotionRate = motionRate;
+    if (this.evolver.running && !this.paused && motionRate !== 0) {
+      const dt = frameDt * (motionRate ?? 1);
       if (this.temperatureProbe !== null && this.evolver.arrivals !== this.seenArrivals) {
         // A new favorite: the stillness sensor starts fresh (see `Evolver.arrivals`).
         this.seenArrivals = this.evolver.arrivals;
@@ -2456,6 +2464,12 @@ export class Orchestrator implements CommandBus {
             w: r4(this.evolver.debug().w),
             nearest: ev.nearestName,
             nearestDist: r4(ev.nearestDistance),
+            // Motion plays Evolve: moved fraction and play rate (absent = off).
+            camMotion:
+              this.webcam?.motionDrivesEvolve === true
+                ? r4(this.webcam.motionFraction)
+                : undefined,
+            camRate: this.lastMotionRate === null ? undefined : r4(this.lastMotionRate),
           }
         : undefined,
       settings,
